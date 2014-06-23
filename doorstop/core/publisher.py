@@ -4,7 +4,7 @@ import os
 import textwrap
 import logging
 import markdown
-import shutils
+import shutil
 
 from doorstop.common import DoorstopError, create_dirname
 from doorstop.core.types import iter_documents, iter_items, is_tree, is_item
@@ -57,7 +57,7 @@ def publish(obj, path, ext=None, linkify=None, index=None, **kwargs):
     if index and count:
         count += 1
         _index(path)
-
+    
     # Return the published path
     if count:
         msg = "created {} file{}".format(count, 's' if count > 1 else '')
@@ -67,10 +67,8 @@ def publish(obj, path, ext=None, linkify=None, index=None, **kwargs):
         logging.warning("nothing to publish")
         return None
 
-    """ copy the CSS file to the output directory 
-        so we can reference it instead of embedding it
-    """
-    if ext == '.html':
+    # if html format copy the CSS file to the root path
+    if ext=='.html':
         shutil.copy(CSS, path)
 
 
@@ -101,7 +99,7 @@ def _index(directory, extensions=('.html',)):
 
 def _lines_index(filenames):
     """Yield lines of HTML for index.html."""
-    yield header_html()
+    yield header_html(embed=False)
     for filename in filenames:
         name = os.path.splitext(filename)[0]
         yield '<li> <a href="{f}">{n}</a> </li>'.format(f=filename, n=name)
@@ -312,7 +310,10 @@ def _lines_html(obj, linkify=False):
         document = True
     # Generate HTML
     if document:
-        yield header_html()
+    # need to figure out how we pass true/false to this function
+        yield header_html(embed=False)
+    else:
+        yield header_html(embed=True)
     text = '\n'.join(_lines_markdown(obj, linkify=linkify))
     html = markdown.markdown(text, extensions=['extra', 'nl2br', 'sane_lists'])
     yield from html.splitlines()
@@ -347,8 +348,8 @@ def check(ext):
         return gen
 
 
-# create standard HTML header - keep it DRY
-def header_html():
+# create standard HTML header
+def header_html(embed=True):
     """standard header for html output
     TODO add a parameter to embed or link the CSS
     this version is only providing a link
@@ -361,13 +362,24 @@ def header_html():
 
     """
     header = """<!DOCTYPE html>
-    <head>
-    <link rel="stylesheet" type="text/css" href="./doorstop.css">
-    </head>
-    <body>"""
+<head>"""
+
+    if embed:
+        header += """<style type="text/css">"""
+        with open(CSS) as infile:
+            for line in infile:
+                header += line
+        header += """</style>
+</head>
+<body>"""
+    else:
+        header += """\n<link rel="stylesheet" type="text/css" href="./doorstop.css">
+</head>
+<body>"""
+    
     return header;
 
-# create standard HTML header - keep it DRY
+# create standard HTML header 
 def footer_html():
     """standard footer for html formats
 
