@@ -30,6 +30,7 @@ else
 		OPEN := cygstart
 	else
 		OPEN := open
+		SUDO := sudo
 	endif
 endif
 
@@ -47,10 +48,10 @@ NOSE := $(BIN)/nosetests
 # Main Targets ###############################################################
 
 .PHONY: all
-all: doc $(ALL)
+all: $(ALL)
 $(ALL): $(SOURCES)
-	$(MAKE) check
-	touch $(ALL)  # flag to indicate all setup steps were succesful
+	$(MAKE) doc pep8 pep257
+	touch $(ALL)  # flag to indicate all setup steps were successful
 
 .PHONY: ci
 ci: doorstop pep8 pep257 test tests tutorial
@@ -80,23 +81,32 @@ $(DEPENDS_CI): Makefile
 .PHONY: .depends-dev
 .depends-dev: env Makefile $(DEPENDS_DEV)
 $(DEPENDS_DEV): Makefile
-	$(PIP) install --upgrade docutils pdoc pylint wheel
+	$(PIP) install --upgrade docutils pdoc pylint wheel sphinx
 	touch $(DEPENDS_DEV)  # flag to indicate dependencies are installed
 
 # Development Usage ##########################################################
 
 .PHONY: doorstop
 doorstop: env
-	$(BIN)/doorstop
+	$(BIN)/doorstop --warn-all --error-all --quiet
 
 .PHONY: gui
 gui: env
 	$(BIN)/doorstop-gui
 
+.PHONY: serve
+serve: env
+	$(SUDO) $(BIN)/doorstop-server --debug --launch --port 80
+
 # Documentation ##############################################################
 
 .PHONY: doc
-doc: readme html uml apidocs
+doc: readme reqs uml apidocs sphinx
+
+.PHONY: pages
+pages: reqs-html sphinx
+	cp -r docs/gen/ pages/reqs/
+	cp -r docs/sphinx/_build pages/docs/
 
 .PHONY: readme
 readme: .depends-dev docs/README-github.html docs/README-pypi.html
@@ -107,13 +117,23 @@ docs/README-pypi.html: README.rst
 README.rst: README.md
 	pandoc -f markdown_github -t rst -o README.rst README.md
 
-.PHONY: html
-html: env docs/gen/*.html
+.PHONY: reqs
+reqs: doorstop reqs-html reqs-md reqs-txt
+
+.PHONY: reqs-html
+reqs-html: env docs/gen/*.html
 docs/gen/*.html: $(shell find . -name '*.yml' -not -path '*/test/files/*')
-	- $(MAKE) doorstop
-	$(BIN)/doorstop publish all docs/gen --text
+	$(BIN)/doorstop publish all docs/gen --html
+
+.PHONY: reqs-md
+reqs-md: env docs/gen/*.md
+docs/gen/*.md: $(shell find . -name '*.yml' -not -path '*/test/files/*')
 	$(BIN)/doorstop publish all docs/gen --markdown
-	$(BIN)/doorstop publish all docs/gen --html --with-child-links
+
+.PHONY: reqs-txt
+reqs-txt: env docs/gen/*.txt
+docs/gen/*.txt: $(shell find . -name '*.yml' -not -path '*/test/files/*')
+	$(BIN)/doorstop publish all docs/gen --text
 
 .PHONY: uml
 uml: .depends-dev docs/*.png $(SOURCES)
@@ -127,10 +147,18 @@ apidocs: .depends-ci apidocs/$(PACKAGE)/index.html
 apidocs/$(PACKAGE)/index.html: $(SOURCES)
 	$(PYTHON) $(PDOC) --html --overwrite $(PACKAGE) --html-dir apidocs
 
+.PHONY: sphinx
+sphinx: .depends-dev docs/sphinx/_build
+docs/sphinx/_build: $(SOURCES)
+	$(BIN)/sphinx-apidoc -o docs/sphinx/ doorstop
+	$(BIN)/sphinx-build -b html docs/sphinx docs/sphinx/_build
+	touch docs/sphinx/_build  # flag to indicate sphinx docs generated
+
 .PHONY: read
 read: doc
 	$(OPEN) docs/gen/index.html
 	$(OPEN) apidocs/$(PACKAGE)/index.html
+	$(OPEN) docs/sphinx/_build/index.html
 	$(OPEN) docs/README-pypi.html
 	$(OPEN) docs/README-github.html
 
@@ -149,17 +177,17 @@ pep257: .depends-ci
 
 .PHONY: pylint
 pylint: .depends-dev
-	$(PYLINT) $(PACKAGE) --rcfile .pylintrc
+	$(PYLINT) $(PACKAGE) --rcfile=.pylintrc
 
 # Testing ####################################################################
 
 .PHONY: test
 test: .depends-ci
-	$(NOSE)
+	$(NOSE) --config=.noserc
 
 .PHONY: tests
 tests: .depends-ci
-	TEST_INTEGRATION=1 $(NOSE) --verbose --stop --cover-package=$(PACKAGE)
+	TEST_INTEGRATION=1 $(NOSE) --config=.noserc --cover-package=$(PACKAGE) -xv
 
 .PHONY: tutorial
 tutorial: env
@@ -180,13 +208,15 @@ clean-all: clean .clean-env
 
 .PHONY: .clean-build
 .clean-build:
-	find $(PACKAGE) -name '*.pyc' -delete
-	find $(PACKAGE) -name '__pycache__' -delete
+	find . -name '*.pyc' -not -path "*/env/*" -delete
+	find . -name '__pycache__' -not -path "*/env/*" -delete
 	rm -rf *.egg-info
 
 .PHONY: .clean-doc
 .clean-doc:
 	rm -rf apidocs docs/README*.html README.rst docs/*.png docs/gen
+	rm -rf docs/sphinx/doorstop*.rst docs/sphinx/_build
+	rm -rf pages/docs/ pages/reqs/
 
 .PHONY: .clean-test
 .clean-test:

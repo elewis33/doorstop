@@ -13,11 +13,15 @@ from doorstop.core.builder import _clear_tree
 from doorstop import settings
 
 from doorstop.cli.test import ENV, REASON, ROOT, FILES, REQS, TUTORIAL
+from doorstop.cli.test import SettingsTestCase
+
+REQ_COUNT = 14
+ALL_COUNT = 44
 
 
-class TempTestCase(unittest.TestCase):  # pylint: disable=R0904
+class TempTestCase(unittest.TestCase):
 
-    """Base test case class with a temporary directory."""  # pylint: disable=C0103
+    """Base test case class with a temporary directory."""
 
     def setUp(self):
         self.cwd = os.getcwd()
@@ -29,47 +33,36 @@ class TempTestCase(unittest.TestCase):  # pylint: disable=R0904
             shutil.rmtree(self.temp)
 
 
-class MockTestCase(TempTestCase):  # pylint: disable=R0904
+class MockTestCase(TempTestCase):
 
-    """Base test case class for a temporary mock working copy."""  # pylint: disable=C0103
+    """Base test case class for a temporary mock working copy."""
 
     def setUp(self):
         super().setUp()
         os.chdir(self.temp)
-        open('.mockvcs', 'w').close()
+        common.touch('.mockvcs')
         _clear_tree()
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestMain(unittest.TestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestMain(SettingsTestCase):
 
     """Integration tests for the 'doorstop' command."""
 
     def setUp(self):
+        super().setUp()
         self.cwd = os.getcwd()
         self.temp = tempfile.mkdtemp()
-        self.backup = (settings.REFORMAT,
-                       settings.CHECK_REF,
-                       settings.CHECK_CHILD_LINKS,
-                       settings.REORDER,
-                       settings.CHECK_LEVELS)
 
     def tearDown(self):
+        super().tearDown()
         os.chdir(self.cwd)
         shutil.rmtree(self.temp)
-        (settings.REFORMAT,
-         settings.CHECK_REF,
-         settings.CHECK_CHILD_LINKS,
-         settings.REORDER,
-         settings.CHECK_LEVELS) = self.backup
 
     def test_main(self):
         """Verify 'doorstop' can be called."""
         self.assertIs(None, main([]))
-
-    def test_main_help(self):
-        """Verify 'doorstop --help' can be requested."""
-        self.assertRaises(SystemExit, main, ['--help'])
 
     def test_main_error(self):
         """Verify 'doorstop' returns an error in an empty directory."""
@@ -81,52 +74,11 @@ class TestMain(unittest.TestCase):  # pylint: disable=R0904
         os.chdir(self.temp)
         self.assertIs(None, main(['--project', '.']))
 
-    @patch('doorstop.cli.main._run', Mock(return_value=False))
-    def test_exit(self):
-        """Verify 'doorstop' treats False as an error ."""
-        self.assertRaises(SystemExit, main, [])
 
-    @patch('doorstop.cli.main._run', Mock(side_effect=KeyboardInterrupt))
-    def test_interrupt(self):
-        """Verify 'doorstop' treats KeyboardInterrupt as an error."""
-        self.assertRaises(SystemExit, main, [])
+@unittest.skipUnless(os.getenv(ENV), REASON)
+class TestCreate(TempTestCase):
 
-    def test_empty(self):
-        """Verify 'doorstop' can be run in a working copy with no docs."""
-        os.mkdir(os.path.join(self.temp, '.mockvcs'))
-        os.chdir(self.temp)
-        self.assertIs(None, main([]))
-        self.assertTrue(settings.REFORMAT)
-        self.assertTrue(settings.CHECK_REF)
-        self.assertTrue(settings.CHECK_CHILD_LINKS)
-        self.assertFalse(settings.REORDER)
-        self.assertTrue(settings.CHECK_LEVELS)
-
-    def test_options(self):
-        """Verify 'doorstop' can be run with options."""
-        os.mkdir(os.path.join(self.temp, '.mockvcs'))
-        os.chdir(self.temp)
-        self.assertIs(None, main(['--no-reformat',
-                                  '--no-ref-check',
-                                  '--no-child-check',
-                                  '--reorder',
-                                  '--no-level-check']))
-        self.assertFalse(settings.REFORMAT)
-        self.assertFalse(settings.CHECK_REF)
-        self.assertFalse(settings.CHECK_CHILD_LINKS)
-        self.assertTrue(settings.REORDER)
-        self.assertFalse(settings.CHECK_LEVELS)
-
-    @patch('doorstop.cli.main.gui', Mock(return_value=True))
-    def test_gui(self):
-        """Verify 'doorstop --gui' launches the GUI."""
-        self.assertIs(None, main(['--gui']))
-
-
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestCreate(TempTestCase):  # pylint: disable=R0904
-
-    """Integration tests for the 'doorstop create' command."""  # pylint: disable=C0103
+    """Integration tests for the 'doorstop create' command."""
 
     def test_create(self):
         """Verify 'doorstop create' can be called."""
@@ -143,8 +95,8 @@ class TestCreate(TempTestCase):  # pylint: disable=R0904
                           ['create', 'ALL', self.temp, '-p', 'REQ'])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestDelete(MockTestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+class TestDelete(MockTestCase):
 
     """Integration tests for the 'doorstop delete' command."""
 
@@ -158,26 +110,54 @@ class TestDelete(MockTestCase):  # pylint: disable=R0904
         self.assertRaises(SystemExit, main, ['delete', 'UNKNOWN'])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestAdd(unittest.TestCase):  # pylint: disable=R0904
+def get_next_number():
+    """Helper function to get the next document number."""
+    last = None
+    for last in sorted(os.listdir(TUTORIAL), reverse=True):
+        if "index" not in last:
+            break
+    assert last
+    number = int(last.replace('TUT', '').replace('.yml', '')) + 1
+    return number
+
+
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.SERVER_HOST', None)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestAdd(unittest.TestCase):
 
     """Integration tests for the 'doorstop add' command."""
 
     @classmethod
     def setUpClass(cls):
-        last = sorted(os.listdir(TUTORIAL))[-1]
-        number = int(last.replace('TUT', '').replace('.yml', '')) + 1
+        number = get_next_number()
         filename = "TUT{}.yml".format(str(number).zfill(3))
         cls.path = os.path.join(TUTORIAL, filename)
 
     def tearDown(self):
-        if os.path.exists(self.path):
-            os.remove(self.path)
+        common.delete(self.path)
 
     def test_add(self):
         """Verify 'doorstop add' can be called."""
         self.assertIs(None, main(['add', 'TUT']))
         self.assertTrue(os.path.isfile(self.path))
+
+    def test_add_multiple(self):
+        """Verify 'doorstop add' can be called with a given positive count"""
+        number = get_next_number()
+        numbers = (number, number + 1, number + 2)
+        self.assertIs(None, main(['add', 'TUT', '--count', '3']))
+        filenames = ("TUT{}.yml".format(str(x).zfill(3)) for x in numbers)
+        paths = [os.path.join(TUTORIAL, f) for f in filenames]
+        self.assertTrue(os.path.isfile(paths[0]))
+        self.assertTrue(os.path.isfile(paths[1]))
+        self.assertTrue(os.path.isfile(paths[2]))
+        os.remove(paths[1])
+        os.remove(paths[2])
+
+    def test_add_multiple_non_positive(self):
+        """Verify 'doorstop add' rejects non-positive integers for counts."""
+        self.assertRaises(SystemExit, main, ['add', 'TUT', '--count', '-1'])
 
     def test_add_specific_level(self):
         """Verify 'doorstop add' can be called with a specific level."""
@@ -189,20 +169,56 @@ class TestAdd(unittest.TestCase):  # pylint: disable=R0904
         self.assertRaises(SystemExit, main, ['add', 'UNKNOWN'])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestRemove(unittest.TestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestAddServer(unittest.TestCase):
+
+    """Integration tests for the 'doorstop add' command using a server."""
+
+    @classmethod
+    def setUpClass(cls):
+        number = get_next_number()
+        filename = "TUT{}.yml".format(str(number).zfill(3))
+        cls.path = os.path.join(TUTORIAL, filename)
+
+    def tearDown(self):
+        common.delete(self.path)
+
+    @patch('doorstop.settings.SERVER_HOST', '')
+    def test_add(self):
+        """Verify 'doorstop add' expects a server."""
+        self.assertRaises(SystemExit, main, ['add', 'TUT'])
+
+    @patch('doorstop.settings.SERVER_HOST', None)
+    def test_add_no_server(self):
+        """Verify 'doorstop add' can be called if there is no server."""
+        self.assertIs(None, main(['add', 'TUT']))
+
+    @patch('doorstop.server.check', Mock())
+    @patch('doorstop.core.document.Document.add_item')
+    def test_add_custom_server(self, mock_add_item):
+        """Verify 'doorstop add' can be called with a custom server."""
+        self.assertIs(None, main(['add', 'TUT', '--server', '1.2.3.4']))
+        mock_add_item.assert_called_once_with(level=None)
+
+    def test_add_force(self):
+        """Verify 'doorstop add' can be called with a missing server."""
+        self.assertIs(None, main(['add', 'TUT', '--force']))
+
+
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestRemove(unittest.TestCase):
 
     """Integration tests for the 'doorstop remove' command."""
 
     ITEM = os.path.join(TUTORIAL, 'TUT003.yml')
 
     def setUp(self):
-        with open(self.ITEM, 'r') as item:
-            self.backup = item.read()
+        self.backup = common.read_text(self.ITEM)
 
     def tearDown(self):
-        with open(self.ITEM, 'w') as item:
-            item.write(self.backup)
+        common.write_text(self.backup, self.ITEM)
 
     def test_remove(self):
         """Verify 'doorstop remove' can be called."""
@@ -210,24 +226,142 @@ class TestRemove(unittest.TestCase):  # pylint: disable=R0904
         self.assertFalse(os.path.exists(self.ITEM))
 
     def test_remove_error(self):
-        """Verify 'doorstop remove' returns an error on unknown item IDs."""
+        """Verify 'doorstop remove' returns an error on unknown item UIDs."""
         self.assertRaises(SystemExit, main, ['remove', 'tut9999'])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestLink(unittest.TestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestReorder(unittest.TestCase):
+
+    """Integration tests for the 'doorstop reorder' command."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.prefix = 'tut'
+        cls.path = os.path.join('docs', 'reqs', 'tutorial', 'index.yml')
+
+    def tearDown(self):
+        common.delete(self.path)
+
+    @patch('doorstop.core.editor.launch')
+    @patch('builtins.input', Mock(return_value='yes'))
+    def test_reorder_document_yes(self, mock_launch):
+        """Verify 'doorstop reorder' can be called with a document (yes)."""
+        self.assertIs(None, main(['reorder', self.prefix]))
+        mock_launch.assert_called_once_with(self.path, tool=None)
+        self.assertFalse(os.path.exists(self.path))
+
+    @patch('doorstop.core.editor.launch')
+    @patch('builtins.input', Mock(return_value='no'))
+    def test_reorder_document_no(self, mock_launch):
+        """Verify 'doorstop reorder' can be called with a document (no)."""
+        self.assertIs(None, main(['reorder', self.prefix]))
+        mock_launch.assert_called_once_with(self.path, tool=None)
+        self.assertFalse(os.path.exists(self.path))
+
+    @patch('doorstop.core.editor.launch')
+    def test_reorder_document_auto(self, mock_launch):
+        """Verify 'doorstop reorder' can be called with a document (auto)."""
+        self.assertIs(None, main(['reorder', self.prefix, '--auto']))
+        mock_launch.assert_never_called()
+
+    @patch('doorstop.core.document.Document._reorder_automatic')
+    @patch('doorstop.core.editor.launch')
+    @patch('builtins.input', Mock(return_value='no'))
+    def test_reorder_document_manual(self, mock_launch, mock_reorder_auto):
+        """Verify 'doorstop reorder' can be called with a document (manual)."""
+        self.assertIs(None, main(['reorder', self.prefix, '--manual']))
+        mock_launch.assert_called_once_with(self.path, tool=None)
+        mock_reorder_auto.assert_never_called()
+        self.assertFalse(os.path.exists(self.path))
+
+    @patch('builtins.input', Mock(return_value='yes'))
+    def test_reorder_document_error(self):
+        """Verify 'doorstop reorder' can handle invalid YAML."""
+
+        def bad_yaml_edit(path, **_):
+            """Simulate adding invalid YAML to the index."""
+            common.write_text("%bad", path)
+
+        with patch('doorstop.core.editor.launch', bad_yaml_edit):
+            self.assertRaises(SystemExit, main, ['reorder', self.prefix])
+
+        self.assertTrue(os.path.exists(self.path))
+
+    def test_reorder_document_unknown(self):
+        """Verify 'doorstop reorder' returns an error on an unknown prefix."""
+        self.assertRaises(SystemExit, main, ['reorder', 'FAKE'])
+
+
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.SERVER_HOST', None)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestEdit(unittest.TestCase):
+
+    """Integration tests for the 'doorstop edit' command."""
+
+    @patch('doorstop.core.editor.launch')
+    def test_edit_item(self, mock_launch):
+        """Verify 'doorstop edit' can be called with an item."""
+        self.assertIs(None, main(['edit', 'tut2']))
+        path = os.path.join(TUTORIAL, 'TUT002.yml')
+        mock_launch.assert_called_once_with(os.path.normpath(path), tool=None)
+
+    def test_edit_item_unknown(self):
+        """Verify 'doorstop edit' returns an error on an unknown item."""
+        self.assertRaises(SystemExit, main, ['edit', '--item', 'FAKE001'])
+
+    @patch('time.time', Mock(return_value=123))
+    @patch('doorstop.core.editor.launch')
+    @patch('builtins.input', Mock(return_value='yes'))
+    def test_edit_document_yes_yes(self, mock_launch):
+        """Verify 'doorstop edit' can be called with a document (yes, yes)."""
+        path = "TUT-123.yml"
+        self.assertIs(None, main(['edit', 'tut']))
+        mock_launch.assert_called_once_with(os.path.normpath(path), tool=None)
+
+    @patch('time.time', Mock(return_value=456))
+    @patch('doorstop.core.editor.launch')
+    @patch('builtins.input', Mock(return_value='no'))
+    def test_edit_document_no_no(self, mock_launch):
+        """Verify 'doorstop edit' can be called with a document (no, no)."""
+        path = "TUT-456.yml"
+        self.assertIs(None, main(['edit', 'tut']))
+        common.delete(path)
+        mock_launch.assert_called_once_with(os.path.normpath(path), tool=None)
+
+    @patch('time.time', Mock(return_value=789))
+    @patch('doorstop.core.editor.launch')
+    @patch('builtins.input', Mock(side_effect=['no', 'yes']))
+    def test_edit_document_no_yes(self, mock_launch):
+        """Verify 'doorstop edit' can be called with a document (no, yes)."""
+        path = "TUT-789.yml"
+        self.assertIs(None, main(['edit', 'tut']))
+        mock_launch.assert_called_once_with(os.path.normpath(path), tool=None)
+
+    def test_edit_document_unknown(self):
+        """Verify 'doorstop edit' returns an error on an unknown document."""
+        self.assertRaises(SystemExit, main, ['edit', '--document', 'FAKE'])
+
+    def test_edit_error(self):
+        """Verify 'doorstop edit' returns an error with an unknown UID."""
+        self.assertRaises(SystemExit, main, ['edit', 'req9999'])
+
+
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestLink(unittest.TestCase):
 
     """Integration tests for the 'doorstop link' command."""
 
     ITEM = os.path.join(TUTORIAL, 'TUT003.yml')
 
     def setUp(self):
-        with open(self.ITEM, 'r') as item:
-            self.backup = item.read()
+        self.backup = common.read_text(self.ITEM)
 
     def tearDown(self):
-        with open(self.ITEM, 'w') as item:
-            item.write(self.backup)
+        common.write_text(self.backup, self.ITEM)
 
     def test_link(self):
         """Verify 'doorstop link' can be called."""
@@ -244,21 +378,21 @@ class TestLink(unittest.TestCase):  # pylint: disable=R0904
         self.assertRaises(SystemExit, main, ['link', 'tut3', 'req9999'])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestUnlink(unittest.TestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestUnlink(unittest.TestCase):
 
     """Integration tests for the 'doorstop unlink' command."""
 
     ITEM = os.path.join(TUTORIAL, 'TUT003.yml')
 
     def setUp(self):
-        with open(self.ITEM, 'r') as item:
-            self.backup = item.read()
-        main(['link', 'tut3', 'req2'])  # create a temporary link
+        self.backup = common.read_text(self.ITEM)
+        with patch('doorstop.settings.ADDREMOVE_FILES', False):
+            main(['link', 'tut3', 'req2'])  # create a temporary link
 
     def tearDown(self):
-        with open(self.ITEM, 'w') as item:
-            item.write(self.backup)
+        common.write_text(self.backup, self.ITEM)
 
     def test_unlink(self):
         """Verify 'doorstop unlink' can be called."""
@@ -275,37 +409,104 @@ class TestUnlink(unittest.TestCase):  # pylint: disable=R0904
         self.assertRaises(SystemExit, main, ['unlink', 'tut3', 'req9999'])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestEdit(unittest.TestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+class TestClear(unittest.TestCase):
 
-    """Integration tests for the 'doorstop edit' command."""
+    """Integration tests for the 'doorstop clear' command."""
 
-    @patch('doorstop.core.editor.launch')
-    def test_edit(self, mock_launch):
-        """Verify 'doorstop edit' can be called."""
-        self.assertIs(None, main(['edit', 'tut2']))
-        path = os.path.join(TUTORIAL, 'TUT002.yml')
-        mock_launch.assert_called_once_with(os.path.normpath(path), tool=None)
+    @patch('doorstop.core.item.Item.clear')
+    def test_clear_item(self, mock_clear):
+        """Verify 'doorstop clear' can be called with an item."""
+        self.assertIs(None, main(['clear', 'tut2']))
+        self.assertEqual(1, mock_clear.call_count)
 
-    def test_edit_error(self):
-        """Verify 'doorstop edit' returns an error with an unknown ID."""
-        self.assertRaises(SystemExit, main, ['edit', 'req9999'])
+    def test_clear_item_unknown(self):
+        """Verify 'doorstop clear' returns an error on an unknown item."""
+        self.assertRaises(SystemExit, main, ['clear', '--item', 'FAKE001'])
+
+    @patch('doorstop.core.item.Item.clear')
+    def test_clear_document(self, mock_clear):
+        """Verify 'doorstop clear' can be called with a document"""
+        self.assertIs(None, main(['clear', 'tut']))
+        self.assertEqual(REQ_COUNT, mock_clear.call_count)
+
+    def test_clear_document_unknown(self):
+        """Verify 'doorstop clear' returns an error on an unknown document."""
+        self.assertRaises(SystemExit, main, ['clear', '--document', 'FAKE'])
+
+    @patch('doorstop.core.item.Item.clear')
+    def test_clear_tree(self, mock_clear):
+        """Verify 'doorstop clear' can be called with a tree"""
+        self.assertIs(None, main(['clear', 'all']))
+        self.assertEqual(ALL_COUNT, mock_clear.call_count)
+
+    def test_clear_tree_item(self):
+        """Verify 'doorstop clear' returns an error with tree and item."""
+        self.assertRaises(SystemExit, main, ['clear', '--item', 'all'])
+
+    def test_clear_tree_document(self):
+        """Verify 'doorstop clear' returns an error with tree and document."""
+        self.assertRaises(SystemExit, main, ['clear', '--document', 'all'])
+
+    def test_clear_error(self):
+        """Verify 'doorstop clear' returns an error with an unknown UID."""
+        self.assertRaises(SystemExit, main, ['clear', 'req9999'])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestImport(unittest.TestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+class TestReview(unittest.TestCase):
 
-    """Integration tests for the 'doorstop import' command."""  # pylint: disable=C0103
+    """Integration tests for the 'doorstop review' command."""
+
+    @patch('doorstop.core.item.Item.review')
+    def test_review_item(self, mock_review):
+        """Verify 'doorstop review' can be called with an item."""
+        self.assertIs(None, main(['review', 'tut2']))
+        self.assertEqual(1, mock_review.call_count)
+
+    def test_review_item_unknown(self):
+        """Verify 'doorstop review' returns an error on an unknown item."""
+        self.assertRaises(SystemExit, main, ['review', '--item', 'FAKE001'])
+
+    @patch('doorstop.core.item.Item.review')
+    def test_review_document(self, mock_review):
+        """Verify 'doorstop review' can be called with a document"""
+        self.assertIs(None, main(['review', 'tut']))
+        self.assertEqual(REQ_COUNT, mock_review.call_count)
+
+    def test_review_document_unknown(self):
+        """Verify 'doorstop review' returns an error on an unknown document."""
+        self.assertRaises(SystemExit, main, ['review', '--document', 'FAKE'])
+
+    @patch('doorstop.core.item.Item.review')
+    def test_review_tree(self, mock_review):
+        """Verify 'doorstop review' can be called with a tree"""
+        self.assertIs(None, main(['review', 'all']))
+        self.assertEqual(ALL_COUNT, mock_review.call_count)
+
+    def test_review_tree_item(self):
+        """Verify 'doorstop review' returns an error with tree and item."""
+        self.assertRaises(SystemExit, main, ['review', '--item', 'all'])
+
+    def test_review_tree_document(self):
+        """Verify 'doorstop review' returns an error with tree and document."""
+        self.assertRaises(SystemExit, main, ['review', '--document', 'all'])
+
+    def test_review_error(self):
+        """Verify 'doorstop review' returns an error with an unknown UID."""
+        self.assertRaises(SystemExit, main, ['review', 'req9999'])
+
+
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.SERVER_HOST', None)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestImport(unittest.TestCase):
+
+    """Integration tests for the 'doorstop import' command."""
 
     def tearDown(self):
-        try:
-            shutil.rmtree(os.path.join(ROOT, 'tmp'))
-        except IOError:
-            pass
-        try:
-            os.remove(os.path.join(REQS, 'REQ099.yml'))
-        except IOError:
-            pass
+        common.delete(os.path.join(ROOT, 'tmp'))
+        common.delete(os.path.join(REQS, 'REQ099.yml'))
 
     def test_import_document(self):
         """Verify 'doorstop import' can import a document."""
@@ -331,10 +532,11 @@ class TestImport(unittest.TestCase):  # pylint: disable=R0904
         self.assertRaises(SystemExit, main, ['import', '--attr', "{}"])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestImportFile(MockTestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.SERVER_HOST', None)
+class TestImportFile(MockTestCase):
 
-    """Integration tests for the 'doorstop import' command."""  # pylint: disable=C0103
+    """Integration tests for the 'doorstop import' command."""
 
     def test_import_file_missing_prefix(self):
         """Verify 'doorstop import' returns an error with a missing prefix."""
@@ -365,8 +567,7 @@ class TestImportFile(MockTestCase):  # pylint: disable=R0904
         # Assert
         path = os.path.join(dirpath, 'REQ001.yml')
         self.assertTrue(os.path.isfile(path))
-        with open(path, 'r') as stream:
-            text = stream.read()
+        text = common.read_text(path)
         self.assertIn('\nlevel: 1.2.3', text)
 
     def test_import_file_with_map_invalid(self):
@@ -409,10 +610,26 @@ class TestImportFile(MockTestCase):  # pylint: disable=R0904
         self.assertTrue(os.path.isfile(path))
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestExport(TempTestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+@patch('doorstop.settings.ADDREMOVE_FILES', False)
+class TestImportServer(unittest.TestCase):
 
-    """Integration tests for the 'doorstop export' command."""  # pylint: disable=C0103
+    """Integration tests for the 'doorstop import' command using a server."""
+
+    def tearDown(self):
+        common.delete(os.path.join(ROOT, 'tmp'))
+        common.delete(os.path.join(REQS, 'REQ099.yml'))
+
+    def test_import_item_force(self):
+        """Verify 'doorstop import' can import an item without a server."""
+        self.assertIs(None,
+                      main(['import', '--item', 'REQ', 'REQ099', '--force']))
+
+
+@unittest.skipUnless(os.getenv(ENV), REASON)
+class TestExport(TempTestCase):
+
+    """Integration tests for the 'doorstop export' command."""
 
     def test_export_document_error_unknown(self):
         """Verify 'doorstop export' returns an error for an unknown format."""
@@ -458,18 +675,20 @@ class TestExport(TempTestCase):  # pylint: disable=R0904
         self.assertRaises(SystemExit, main, ['export', 'all'])
 
 
-@unittest.skipUnless(os.getenv(ENV), REASON)  # pylint: disable=R0904
-class TestPublish(TempTestCase):  # pylint: disable=R0904
+@unittest.skipUnless(os.getenv(ENV), REASON)
+class TestPublish(TempTestCase):
 
-    """Integration tests for the 'doorstop publish' command."""  # pylint: disable=C0103
+    """Integration tests for the 'doorstop publish' command."""
 
     def setUp(self):
         super().setUp()
-        self.backup = (settings.PUBLISH_CHILD_LINKS,)
+        self.backup = (settings.PUBLISH_CHILD_LINKS,
+                       settings.PUBLISH_BODY_LEVELS)
 
     def tearDown(self):
         super().tearDown()
-        (settings.PUBLISH_CHILD_LINKS,) = self.backup
+        (settings.PUBLISH_CHILD_LINKS,
+         settings.PUBLISH_BODY_LEVELS) = self.backup
 
     def test_publish_unknown(self):
         """Verify 'doorstop publish' returns an error for an unknown format."""
@@ -478,12 +697,22 @@ class TestPublish(TempTestCase):  # pylint: disable=R0904
     def test_publish_document(self):
         """Verify 'doorstop publish' can create output."""
         self.assertIs(None, main(['publish', 'tut']))
-        self.assertFalse(settings.PUBLISH_CHILD_LINKS)
+        self.assertTrue(settings.PUBLISH_CHILD_LINKS)
 
     def test_publish_document_with_child_links(self):
         """Verify 'doorstop publish' can create output with child links."""
-        self.assertIs(None, main(['publish', 'tut', '--with-child-links']))
+        self.assertIs(None, main(['publish', 'tut']))
         self.assertTrue(settings.PUBLISH_CHILD_LINKS)
+
+    def test_publish_document_without_child_links(self):
+        """Verify 'doorstop publish' can create output without child links."""
+        self.assertIs(None, main(['publish', 'tut', '--no-child-links']))
+        self.assertFalse(settings.PUBLISH_CHILD_LINKS)
+
+    def test_publish_document_without_body_levels(self):
+        """Verify 'doorstop publish' can create output without body levels."""
+        self.assertIs(None, main(['publish', 'tut', '--no-body-levels']))
+        self.assertFalse(settings.PUBLISH_BODY_LEVELS)
 
     def test_publish_document_error_empty(self):
         """Verify 'doorstop publish' returns an error in an empty folder."""
@@ -548,10 +777,14 @@ class TestPublish(TempTestCase):  # pylint: disable=R0904
         self.assertRaises(SystemExit, main, ['publish', 'all'])
 
 
-@patch('doorstop.cli.main._run', Mock(return_value=True))  # pylint: disable=R0904
-class TestLogging(unittest.TestCase):  # pylint: disable=R0904
+@patch('doorstop.cli.commands.run', Mock(return_value=True))
+class TestLogging(unittest.TestCase):
 
     """Integration tests for the Doorstop CLI logging."""
+
+    def test_verbose_0(self):
+        """Verify verbose level 0 can be set."""
+        self.assertIs(None, main([]))
 
     def test_verbose_1(self):
         """Verify verbose level 1 can be set."""
@@ -572,4 +805,9 @@ class TestLogging(unittest.TestCase):  # pylint: disable=R0904
     def test_verbose_5(self):
         """Verify verbose level 5 cannot be set."""
         self.assertIs(None, main(['-vvvvv']))
-        self.assertEqual(4, common.VERBOSITY)
+        self.assertEqual(4, common.verbosity)
+
+    def test_verbose_quiet(self):
+        """Verify verbose level -1 can be set."""
+        self.assertIs(None, main(['-q']))
+        self.assertEqual(-1, common.verbosity)

@@ -4,21 +4,21 @@ import os
 import csv
 import datetime
 from collections import defaultdict
-import logging
 
 import yaml
-# TODO: track pylint update to resolve openpyxl false positives
-# pylint: disable=E1101,E1120,E1123
-import openpyxl  # pylint: disable=F0401
-from openpyxl.styles import Alignment, Font  # pylint: disable=F0401
+import openpyxl
 
-from doorstop.common import DoorstopError, create_dirname
+from doorstop import common
+from doorstop.common import DoorstopError
 from doorstop.core.types import iter_documents, iter_items
+from doorstop import settings
 
-LIST_SEP = ',\n'  # string separating list values when joined in a string
+LIST_SEP = '\n'  # string separating list values when joined in a string
 
 XLSX_MAX_WIDTH = 65  # maximum width for a column
 XLSX_FILTER_PADDING = 3.5  # column padding to account for filter button
+
+log = common.logger(__name__)
 
 
 def export(obj, path, ext=None, **kwargs):
@@ -29,13 +29,13 @@ def export(obj, path, ext=None, **kwargs):
     1. document or item-like object + output file path
     2. tree-like object + output directory path
 
-    @param obj: (1) Item, list of Items, Document or (2) Tree
-    @param path: (1) output file path or (2) output directory path
-    @param ext: file extension to override output extension
+    :param obj: (1) Item, list of Items, Document or (2) Tree
+    :param path: (1) output file path or (2) output directory path
+    :param ext: file extension to override output extension
 
-    @raise DoorstopError: for unknown file formats
+    :raises: :class:`doorstop.common.DoorstopError` for unknown file formats
 
-    @return: output location if files created, else None
+    :return: output location if files created, else None
 
     """
     # Determine the output format
@@ -48,81 +48,81 @@ def export(obj, path, ext=None, **kwargs):
         count += 1
 
         # Export content to the specified path
-        create_dirname(path2)
-        logging.info("creating file {}...".format(path2))
+        common.create_dirname(path2)
+        log.info("exporting to {}...".format(path2))
         if ext in FORMAT_LINES:
-            with open(path2, 'w') as outfile:  # pragma: no cover (integration test)
-                for line in export_lines(obj2, ext, **kwargs):
-                    outfile.write(line + '\n')
+            lines = export_lines(obj2, ext, **kwargs)
+            common.write_lines(lines, path2)
         else:
             export_file(obj2, path2, ext, **kwargs)
 
     # Return the exported path
     if count:
-        msg = "created {} file{}".format(count, 's' if count > 1 else '')
-        logging.info(msg)
+        msg = "exported to {} file{}".format(count, 's' if count > 1 else '')
+        log.info(msg)
         return path
     else:
-        logging.warning("nothing to export")
+        log.warning("nothing to export")
         return None
 
 
 def export_lines(obj, ext='.yml', **kwargs):
     """Yield lines for an export in the specified format.
 
-    @param obj: Item, list of Items, or Document to export
-    @param ext: file extension to specify the output format
+    :param obj: Item, list of Items, or Document to export
+    :param ext: file extension to specify the output format
 
-    @raise DoorstopError: for unknown file formats
+    :raises: :class:`doorstop.common.DoorstopError` for unknown file formats
 
-    @return: lines generator
+    :return: lines generator
 
     """
     gen = check(ext, get_lines_gen=True)
-    logging.debug("yielding {} as lines of {}...".format(obj, ext))
+    log.debug("yielding {} as lines of {}...".format(obj, ext))
     yield from gen(obj, **kwargs)
 
 
 def export_file(obj, path, ext=None, **kwargs):
     """Create a file object for an export in the specified format.
 
-    @param obj: Item, list of Items, or Document to export
-    @param path: output file location with desired extension
-    @param ext: file extension to override output path's extension
+    :param obj: Item, list of Items, or Document to export
+    :param path: output file location with desired extension
+    :param ext: file extension to override output path's extension
 
-    @raise DoorstopError: for unknown file formats
+    :raises: :class:`doorstop.common.DoorstopError` for unknown file formats
 
-    @return: path to created file
+    :return: path to created file
 
     """
     ext = ext or os.path.splitext(path)[-1]
     func = check(ext, get_file_func=True)
-    logging.debug("converting {} to file format {}...".format(obj, ext))
+    log.debug("converting {} to file format {}...".format(obj, ext))
     return func(obj, path, **kwargs)
 
 
-def _lines_yaml(obj):
+def _lines_yaml(obj, **_):
     """Yield lines for a YAML export.
 
-    @param obj: Item, list of Items, or Document to export
+    :param obj: Item, list of Items, or Document to export
 
-    @return: iterator of lines of text
+    :return: iterator of lines of text
 
     """
     for item in iter_items(obj):
 
-        data = {str(item.id): item.data}
-        text = yaml.dump(data)
+        data = {str(item.uid): item.data}
+        text = yaml.dump(data, default_flow_style=False, allow_unicode=True)
         yield text
 
 
-def _tabulate(obj, sep=LIST_SEP):
+def _tabulate(obj, sep=LIST_SEP, auto=False):
     """Yield lines of header/data for tabular export.
 
-    @param obj: Item, list of Items, or Document to export
-    @param sep: string separating list values when joined in a string
+    :param obj: Item, list of Items, or Document to export
+    :param sep: string separating list values when joined in a string
+    :param auto: include placeholders for new items on import
 
-    @return: iterator of rows of data
+    :return: iterator of rows of data
 
     """
     yield_header = True
@@ -137,92 +137,110 @@ def _tabulate(obj, sep=LIST_SEP):
             for value in sorted(data.keys()):
                 if value not in header:
                     header.append(value)
-            yield ['id'] + header
+            yield ['uid'] + header
             yield_header = False
 
         # Yield row
-        row = [item.id]
+        row = [item.uid]
         for key in header:
             value = data.get(key)
             if key == 'level':
                 # some levels are floats for YAML presentation
                 value = str(value)
-            elif isinstance(value, list):
-                # separate lists with commas
-                value = sep.join(str(p) for p in value)
+            elif key == 'links':
+                # separate identifiers with a delimiter
+                value = sep.join(uid.string for uid in item.links)
+            elif isinstance(value, str) and key not in ('reviewed',):
+                # remove sentence boundaries and line wrapping
+                value = item.get(key)
+            elif value is None:
+                value = ''
             row.append(value)
-
         yield row
 
+    # Yield placeholders for new items
+    if auto:
+        for _ in range(settings.PLACEHOLDER_COUNT):
+            yield [settings.PLACEHOLDER]
 
-def _file_csv(obj, path, delimiter=','):
+
+def _file_csv(obj, path, delimiter=',', auto=False):
     """Create a CSV file at the given path.
 
-    @param obj: Item, list of Items, or Document to export
+    :param obj: Item, list of Items, or Document to export
+    :param path: location to export CSV file
+    :param delimiter: character to delimit fields
+    :param auto: include placeholders for new items on import
 
-    @return: path of created file
+    :return: path of created file
 
     """
-    with open(path, 'w', newline='') as stream:
+    with open(path, 'w', newline='', encoding='utf-8') as stream:
         writer = csv.writer(stream, delimiter=delimiter)
-        for row in _tabulate(obj):
+        for row in _tabulate(obj, auto=auto):
             writer.writerow(row)
     return path
 
 
-def _file_tsv(obj, path):
+def _file_tsv(obj, path, auto=False):
     """Create a TSV file at the given path.
 
-    @param obj: Item, list of Items, or Document to export
+    :param obj: Item, list of Items, or Document to export
+    :param path: location to export TSV file
+    :param auto: include placeholders for new items on import
 
-    @return: path of created file
+    :return: path of created file
 
     """
-    return _file_csv(obj, path, delimiter='\t')
+    return _file_csv(obj, path, delimiter='\t', auto=auto)
 
 
-def _file_xlsx(obj, path):
+def _file_xlsx(obj, path, auto=False):
     """Create an XLSX file at the given path.
 
-    @param obj: Item, list of Items, or Document to export
+    :param obj: Item, list of Items, or Document to export
+    :param path: location to export XLSX file
+    :param auto: include placeholders for new items on import
 
-    @return: path of created file
+    :return: path of created file
 
     """
-    workbook = _get_xlsx(obj)
+    workbook = _get_xlsx(obj, auto)
     workbook.save(path)
 
     return path
 
 
-def _get_xlsx(obj):
+def _get_xlsx(obj, auto):
     """Create an XLSX workbook object.
 
-    @param obj: Item, list of Items, or Document to export
+    :param obj: Item, list of Items, or Document to export
+    :param auto: include placeholders for new items on import
 
-    @return: new workbook
+    :return: new workbook
 
     """
     col_widths = defaultdict(int)
     col = 'A'
 
     # Create a new workbook
-    workbook = openpyxl.Workbook()  # pylint: disable=E1102
+    workbook = openpyxl.Workbook()
     worksheet = workbook.active
 
     # Populate cells
-    for row, data in enumerate(_tabulate(obj), start=1):
+    for row, data in enumerate(_tabulate(obj, auto=auto), start=1):
         for col_idx, value in enumerate(data, start=1):
             col = openpyxl.cell.get_column_letter(col_idx)
             cell = worksheet.cell('%s%s' % (col, row))
 
             # wrap text in every cell
-            alignment = Alignment(vertical='top', horizontal='left',
-                                  wrap_text=True)
+            alignment = openpyxl.styles.Alignment(vertical='top',
+                                                  horizontal='left',
+                                                  wrap_text=True)
             style = cell.style.copy(alignment=alignment)
             # and bold header rows
             if row == 1:
-                style = style.copy(font=Font(bold=True))
+                style = style.copy(font=openpyxl.styles.Font(bold=True))
             cell.style = style
 
             # convert incompatible Excel types:
@@ -272,12 +290,12 @@ FORMAT = dict(list(FORMAT_LINES.items()) + list(FORMAT_FILE.items()))
 def check(ext, get_lines_gen=False, get_file_func=False):
     """Confirm an extension is supported for export.
 
-    @param get_lines_func: return a lines generator if available
-    @param get_file_func: return a file creator if available
+    :param get_lines_func: return a lines generator if available
+    :param get_file_func: return a file creator if available
 
-    @raise DoorstopError: for unknown formats
+    :raises: :class:`doorstop.common.DoorstopError` for unknown formats
 
-    @return: function requested if available
+    :return: function requested if available
 
     """
     exts = ', '.join(ext for ext in FORMAT)
@@ -292,7 +310,7 @@ def check(ext, get_lines_gen=False, get_file_func=False):
             exc = DoorstopError(fmt.format("lines export", lines_exts))
             raise exc from None
         else:
-            logging.debug("found lines generator for: {}".format(ext))
+            log.debug("found lines generator for: {}".format(ext))
             return gen
 
     if get_file_func:
@@ -302,7 +320,7 @@ def check(ext, get_lines_gen=False, get_file_func=False):
             exc = DoorstopError(fmt.format("file export", file_exts))
             raise exc from None
         else:
-            logging.debug("found file creator for: {}".format(ext))
+            log.debug("found file creator for: {}".format(ext))
             return func
 
     if ext not in FORMAT:

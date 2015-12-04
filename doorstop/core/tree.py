@@ -1,20 +1,45 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 """Representation of a hierarchy of documents."""
 
+import sys
 from itertools import chain
-import logging
 
+from doorstop import common
 from doorstop.common import DoorstopError, DoorstopWarning
 from doorstop.core.base import BaseValidatable
-from doorstop.core.base import clear_document_cache, clear_item_cache
-from doorstop.core.types import Prefix, ID
+from doorstop.core.types import Prefix, UID
 from doorstop.core.document import Document
 from doorstop.core import vcs
-from doorstop.core import editor
+from doorstop import settings
+
+UTF8 = 'utf-8'
+CP437 = 'cp437'
+ASCII = 'ascii'
+
+BOX = {'end': {UTF8: '│   ',
+               CP437: '┬   ',
+               ASCII: '|   '},
+       'tee': {UTF8: '├ ─ ',
+               CP437: '├── ',
+               ASCII: '+-- '},
+       'bend': {UTF8: '└ ─ ',
+                CP437: '└── ',
+                ASCII: '+-- '},
+       'pipe': {UTF8: '│   ',
+                CP437: '│   ',
+                ASCII: '|   '},
+       'space': {UTF8: '    ',
+                 CP437: '    ',
+                 ASCII: '    '}}
+
+log = common.logger(__name__)
 
 
 class Tree(BaseValidatable):  # pylint: disable=R0902
 
-    """A bidirectional tree structure to store the hierarchy of documents.
+    """A bidirectional tree structure to store a hierarchy of documents.
 
     Although requirements link "upwards", bidirectionality simplifies
     document processing and validation.
@@ -25,12 +50,13 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
     def from_list(documents, root=None):
         """Initialize a new tree from a list of documents.
 
-        @param documents: list of Documents
-        @param root: path to root of the project
+        :param documents: list of :class:`~doorstop.core.document.Document`
+        :param root: path to root of the project
 
-        @raise DoorstopError: when the tree cannot be built
+        :raises: :class:`~doorstop.common.DoorstopError` when the tree
+            cannot be built
 
-        @return: new Tree
+        :return: new :class:`~doorstop.core.tree.Tree`
 
         """
         if not documents:
@@ -38,7 +64,7 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
         unplaced = list(documents)
         for document in list(unplaced):
             if document.parent is None:
-                logging.info("root of the tree: {}".format(document))
+                log.info("root of the tree: {}".format(document))
                 tree = Tree(document)
                 document.tree = tree
                 unplaced.remove(document)
@@ -50,19 +76,19 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
             count = len(unplaced)
             for document in list(unplaced):
                 if document.parent is None:
-                    logging.info("root of the tree: {}".format(document))
+                    log.info("root of the tree: {}".format(document))
                     raise DoorstopError("multiple root documents")
                 try:
                     tree._place(document)  # pylint: disable=W0212
                 except DoorstopError as error:
-                    logging.debug(error)
+                    log.debug(error)
                 else:
-                    logging.info("added to tree: {}".format(document))
+                    log.info("added to tree: {}".format(document))
                     document.tree = tree
                     unplaced.remove(document)
 
             if len(unplaced) == count:  # no more documents could be placed
-                logging.debug("unplaced documents: {}".format(unplaced))
+                log.debug("unplaced documents: {}".format(unplaced))
                 msg = "unplaced document: {}".format(unplaced[0])
                 raise DoorstopError(msg)
 
@@ -73,30 +99,26 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
         self.root = root or document.root  # enables mock testing
         self.parent = parent
         self.children = []
-        self._vcs = None
+        self._vcs = None  # working copy reference loaded in a property
+        self.request_next_number = None  # server method injected by clients
         self._loaded = False
         self._item_cache = {}
         self._document_cache = {}
 
     def __repr__(self):
-        return "<Tree {}>".format(self)
+        return "<Tree {}>".format(self._draw_line())
 
     def __str__(self):
-        # Build parent prefix string (enables mock testing)
-        prefix = getattr(self.document, 'prefix', self.document)
-        # Build children prefix strings
-        children = ", ".join(str(c) for c in self.children)
-        # Format the tree
-        if children:
-            return "{} <- [ {} ]".format(prefix, children)
-        else:
-            return "{}".format(prefix)
+        return self._draw_line()
 
     def __len__(self):
         if self.document:
             return 1 + sum(len(child) for child in self.children)
         else:
             return 0
+
+    def __bool__(self):  # override `__len__` behavior, pylint: disable=R0201
+        return True
 
     def __getitem__(self, key):
         raise IndexError("{} cannot be indexed by key".format(self.__class__))
@@ -109,12 +131,13 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
     def _place(self, document):
         """Attempt to place the document in the current tree.
 
-        @param document: Document to add
+        :param document: :class:`doorstop.core.document.Document` to add
 
-        @raise DoorstopError: if the document cannot yet be placed
+        :raises: :class:`~doorstop.common.DoorstopError` if the document
+            cannot yet be placed
 
         """
-        logging.debug("trying to add '{}'...".format(document))
+        log.debug("trying to add {}...".format(document))
         if not self.document:  # tree is empty
 
             if document.parent:
@@ -149,9 +172,9 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
         else:  # tree has documents, but no parent specified for document
 
             msg = "no parent specified for {}".format(document)
-            logging.info(msg)
+            log.info(msg)
             prefixes = ', '.join(document.prefix for document in self)
-            logging.info("parent options: {}".format(document, prefixes))
+            log.info("parent options: {}".format(prefixes))
             raise DoorstopError(msg)
 
     # attributes #############################################################
@@ -170,20 +193,21 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
 
     # actions ################################################################
 
-    @clear_document_cache
-    @clear_item_cache
+    # decorators are applied to methods in the associated classes
     def create_document(self, path, value, sep=None, digits=None, parent=None):  # pylint: disable=R0913
         """Create a new document and add it to the tree.
 
-        @param path: directory path for the new document
-        @param value: document or prefix
-        @param sep: separator between prefix and numbers
-        @param digits: number of digits for the document's numbers
-        @param parent: parent document's prefix
+        :param path: directory path for the new document
+        :param value: document or prefix
+        :param sep: separator between prefix and numbers
+        :param digits: number of digits for the document's numbers
+        :param parent: parent document's prefix
 
-        @raise DoorstopError: if the document cannot be created
+        :raises: :class:`~doorstop.common.DoorstopError` if the
+            document cannot be created
 
-        @return: newly created and placed Document
+        :return: newly created and placed document
+            :class:`~doorstop.core.document.Document`
 
         """
         prefix = Prefix(value)
@@ -194,193 +218,210 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
             self._place(document)
         except DoorstopError:
             msg = "deleting unplaced directory {}...".format(document.path)
-            logging.debug(msg)
+            log.debug(msg)
             document.delete()
             raise
         else:
-            logging.info("added to tree: {}".format(document))
+            log.info("added to tree: {}".format(document))
         return document
 
-    @clear_item_cache
-    def add_item(self, value, level=None, reorder=True):
+    # decorators are applied to methods in the associated classes
+    def add_item(self, value, number=None, level=None, reorder=True):
         """Add a new item to an existing document by prefix.
 
-        @param value: document or prefix
-        @param level: desired item level
-        @param reorder: update levels of document items
+        :param value: document or prefix
+        :param number: desired item number
+        :param level: desired item level
+        :param reorder: update levels of document items
 
-        @raise DoorstopError: if the item cannot be created
+        :raises: :class:`~doorstop.common.DoorstopError` if the item
+            cannot be created
 
-        @return: newly created Item
+        :return: newly created :class:`~doorstop.core.item.Item`
 
         """
         prefix = Prefix(value)
         document = self.find_document(prefix)
-        self.vcs.lock(document.config)  # prevents duplicate item IDs
-        item = document.add_item(level=level, reorder=reorder)
+        item = document.add_item(number=number, level=level, reorder=reorder)
         return item
 
-    @clear_item_cache
+    # decorators are applied to methods in the associated classes
     def remove_item(self, value, reorder=True):
-        """Remove an item from a document by ID.
+        """Remove an item from a document by UID.
 
-        @param value: item or ID
-        @param reorder: update levels of document items
+        :param value: item or UID
+        :param reorder: update levels of document items
 
-        @raise DoorstopError: if the item cannot be removed
+        :raises: :class:`~doorstop.common.DoorstopError` if the item
+            cannot be removed
 
-        @return: removed Item
+        :return: removed :class:`~doorstop.core.item.Item`
 
         """
-        identifier = ID(value)
+        uid = UID(value)
         for document in self:
             try:
-                document.find_item(identifier)
+                document.find_item(uid)
             except DoorstopError:
                 pass  # item not found in that document
             else:
-                item = document.remove_item(identifier, reorder=reorder)
+                item = document.remove_item(uid, reorder=reorder)
                 return item
 
-        raise DoorstopError(ID.UNKNOWN_MESSAGE.format(k='', i=identifier))
+        raise DoorstopError(UID.UNKNOWN_MESSAGE.format(k='', u=uid))
 
+    # decorators are applied to methods in the associated classes
     def link_items(self, cid, pid):
-        """Add a new link between two items by IDs.
+        """Add a new link between two items by UIDs.
 
-        @param cid: child item's ID (or child item)
-        @param pid: parent item's ID (or parent item)
+        :param cid: child item's UID (or child item)
+        :param pid: parent item's UID (or parent item)
 
-        @raise DoorstopError: if the link cannot be created
+        :raises: :class:`~doorstop.common.DoorstopError` if the link
+            cannot be created
 
-        @return: child Item, parent Item
+        :return: child :class:`~doorstop.core.item.Item`,
+                 parent :class:`~doorstop.core.item.Item`
 
         """
-        logging.info("linking {} to {}...".format(cid, pid))
+        log.info("linking {} to {}...".format(cid, pid))
         # Find child item
         child = self.find_item(cid, _kind='child')
         # Find parent item
         parent = self.find_item(pid, _kind='parent')
         # Add link
-        child.link(parent.id)
+        child.link(parent.uid)
         return child, parent
 
+    # decorators are applied to methods in the associated classes`
     def unlink_items(self, cid, pid):
-        """Remove a link between two items by IDs.
+        """Remove a link between two items by UIDs.
 
-        @param cid: child item's ID (or child item)
-        @param pid: parent item's ID (or parent item)
+        :param cid: child item's UID (or child item)
+        :param pid: parent item's UID (or parent item)
 
-        @raise DoorstopError: if the link cannot be removed
+        :raises: :class:`~doorstop.common.DoorstopError` if the link
+            cannot be removed
 
-        @return: child Item, parent Item
+        :return: child :class:`~doorstop.core.item.Item`,
+                 parent :class:`~doorstop.core.item.Item`
 
         """
-        logging.info("unlinking '{}' from '{}'...".format(cid, pid))
+        log.info("unlinking '{}' from '{}'...".format(cid, pid))
         # Find child item
         child = self.find_item(cid, _kind='child')
         # Find parent item
         parent = self.find_item(pid, _kind='parent')
         # Remove link
-        child.unlink(parent.id)
+        child.unlink(parent.uid)
         return child, parent
 
-    def edit_item(self, identifier, tool=None, launch=False):
-        """Open an item for editing by ID.
+    # decorators are applied to methods in the associated classes
+    def edit_item(self, uid, tool=None, launch=False):
+        """Open an item for editing by UID.
 
-        @param identifier: item's ID (or item)
-        @param tool: alternative text editor to open the item
-        @param launch: open the text editor
+        :param uid: item's UID (or item)
+        :param tool: alternative text editor to open the item
+        :param launch: open the text editor
 
-        @raise DoorstopError: if the item cannot be found
+        :raises: :class:`~doorstop.common.DoorstopError` if the item
+            cannot be found
 
-        @return: edited Item
+        :return: edited :class:`~doorstop.core.item.Item`
 
         """
-        logging.debug("looking for {}...".format(identifier))
-        # Find item
-        item = self.find_item(identifier)
-        # Lock the item
-        self.vcs.lock(item.path)
-        # Open item
+        # Find the item
+        item = self.find_item(uid)
+        # Edit the item
         if launch:
-            editor.launch(item.path, tool=tool)
-            # TODO: force an item reload without touching a private attribute
-            item._loaded = False  # pylint: disable=W0212
+            item.edit(tool=tool)
         # Return the item
         return item
 
     def find_document(self, value):
         """Get a document by its prefix.
 
-        @param value: document or prefix
+        :param value: document or prefix
 
-        @raise DoorstopError: if the document cannot be found
+        :raises: :class:`~doorstop.common.DoorstopError` if the document
+            cannot be found
 
-        @return: matching Document
+        :return: matching :class:`~doorstop.core.document.Document`
 
         """
         prefix = Prefix(value)
-        logging.debug("looking for document '{}'...".format(prefix))
+        log.debug("looking for document '{}'...".format(prefix))
         try:
             document = self._document_cache[prefix]
             if document:
-                logging.debug("found cached document: {}".format(document))
+                log.trace("found cached document: {}".format(document))
                 return document
             else:
-                logging.debug("found cached unknown: {}".format(prefix))
+                log.trace("found cached unknown: {}".format(prefix))
         except KeyError:
             for document in self:
-                if document.prefix.lower() == prefix.lower():
-                    logging.debug("found document: {}".format(document))
-                    self._document_cache[prefix] = document
+                if document.prefix == prefix:
+                    log.trace("found document: {}".format(document))
+                    if settings.CACHE_DOCUMENTS:
+                        self._document_cache[prefix] = document
+                        log.trace("cached document: {}".format(document))
                     return document
-            logging.debug("could not find document: {}".format(prefix))
-            self._document_cache[prefix] = None
+            log.debug("could not find document: {}".format(prefix))
+            if settings.CACHE_DOCUMENTS:
+                self._document_cache[prefix] = None
+                log.trace("cached unknown: {}".format(prefix))
 
         raise DoorstopError(Prefix.UNKNOWN_MESSGE.format(prefix))
 
     def find_item(self, value, _kind=''):
-        """Get an item by its ID.
+        """Get an item by its UID.
 
-        @param value: item or ID
+        :param value: item or UID
 
-        @raise DoorstopError: if the item cannot be found
+        :raises: :class:`~doorstop.common.DoorstopError` if the item
+            cannot be found
 
-        @return: matching Item
+        :return: matching :class:`~doorstop.core.item.Item`
 
         """
-        identifier = ID(value)
+        uid = UID(value)
         _kind = (' ' + _kind) if _kind else _kind  # for logging messages
-        logging.debug("looking for{} item '{}'...".format(_kind, identifier))
+        log.debug("looking for{} item '{}'...".format(_kind, uid))
         try:
-            item = self._item_cache[identifier]
+            item = self._item_cache[uid]
             if item:
-                logging.debug("found cached item: {}".format(item))
+                log.trace("found cached item: {}".format(item))
                 return item
             else:
-                logging.debug("found cached unknown: {}".format(identifier))
+                log.trace("found cached unknown: {}".format(uid))
         except KeyError:
             for document in self:
                 try:
-                    item = document.find_item(identifier, _kind=_kind)
+                    item = document.find_item(uid, _kind=_kind)
                 except DoorstopError:
                     pass  # item not found in that document
                 else:
-                    logging.debug("found item: {}".format(item))
-                    self._item_cache[identifier] = item
+                    log.trace("found item: {}".format(item))
+                    if settings.CACHE_ITEMS:
+                        self._item_cache[uid] = item
+                        log.trace("cached item: {}".format(item))
                     return item
-            logging.debug("could not find item: {}".format(identifier))
-            self._item_cache[identifier] = None
+            log.debug("could not find item: {}".format(uid))
+            if settings.CACHE_ITEMS:
+                self._item_cache[uid] = None
+                log.trace("cached unknown: {}".format(uid))
 
-        raise DoorstopError(ID.UNKNOWN_MESSAGE.format(k=_kind, i=identifier))
+        raise DoorstopError(UID.UNKNOWN_MESSAGE.format(k=_kind, u=uid))
 
     def get_issues(self, document_hook=None, item_hook=None):
         """Yield all the tree's issues.
 
-        @param document_hook: function to call for custom document validation
-        @param item_hook: function to call for custom item validation
+        :param document_hook: function to call for custom document validation
+        :param item_hook: function to call for custom item validation
 
-        @return: generator of DoorstopError, DoorstopWarning, DoorstopInfo
+        :return: generator of :class:`~doorstop.common.DoorstopError`,
+                              :class:`~doorstop.common.DoorstopWarning`,
+                              :class:`~doorstop.common.DoorstopInfo`
 
         """
         hook = document_hook if document_hook else lambda **kwargs: []
@@ -396,24 +437,164 @@ class Tree(BaseValidatable):  # pylint: disable=R0902
                 if isinstance(issue, Exception):
                     yield type(issue)("{}: {}".format(document.prefix, issue))
 
-    @clear_document_cache
-    @clear_item_cache
+    def get_traceability(self):
+        """Return sorted rows of traceability slices.
+
+        :return: list of list of :class:`~doorstop.core.item.Item` or `None`
+
+        """
+        def by_uid(row):
+            """Helper function to sort rows by UID."""
+            row2 = []
+            for item in row:
+                if item:
+                    row2.append('0' + str(item.uid))
+                else:
+                    row2.append('1')  # force `None` to sort after items
+            return row2
+
+        # Create mapping of document prefix to slice index
+        mapping = {}
+        for index, document in enumerate(self.documents):
+            mapping[document.prefix] = index
+
+        # Collect all rows
+        rows = set()
+        for index, document in enumerate(self.documents):
+            for item in document:
+
+                for row in self._iter_rows(item, mapping):
+                    rows.add(row)
+
+        # Sort rows
+        return sorted(rows, key=by_uid)
+
+    def _iter_rows(self, item, mapping, parent=True, child=True, row=None):  # pylint: disable=R0913
+        """Generate all traceability row slices.
+
+        :param item: base :class:`~doorstop.core.item.Item` for slicing
+        :param mapping: `dict` of document prefix to slice index
+        :param parent: indicate recursion is in the parent direction
+        :param child: indicates recursion is in the child direction
+        :param row: currently generated row
+
+        """
+        class Row(list):
+
+            """List type that tracks upper and lower boundaries."""
+
+            def __init__(self, *args, parent=False, child=False, **kwargs):
+                super().__init__(*args, **kwargs)
+                # Flags to indicate upper and lower bounds have been hit
+                self.parent = parent
+                self.child = child
+
+        if item.normative:
+
+            # Start the next row or copy from recursion
+            if row is None:
+                row = Row([None] * len(mapping))
+            else:
+                row = Row(row, parent=row.parent, child=row.child)
+
+            # Add the current item to the row
+            row[mapping[item.document.prefix]] = item
+
+            # Recurse to the next parent/child item
+            if parent:
+                items = item.parent_items
+                for item2 in items:
+                    yield from self._iter_rows(item2, mapping,
+                                               child=False, row=row)
+                if not items:
+                    row.parent = True
+            if child:
+                items = item.child_items
+                for item2 in items:
+                    yield from self._iter_rows(item2, mapping,
+                                               parent=False, row=row)
+                if not items:
+                    row.child = True
+
+            # Yield the row if both boundaries have been hit
+            if row.parent and row.child:
+                yield tuple(row)
+
     def load(self, reload=False):
         """Load the tree's documents and items.
 
-        Unlike the Document and Item class, this load method is not
+        Unlike the :class:`~doorstop.core.document.Document` and
+        :class:`~doorstop.core.item.Item` class, this load method is not
         used internally. Its purpose is to force the loading of
-        content in large trees where lazy loading may be too slow.
+        content in large trees where lazy loading may cause long delays
+        late in processing.
 
         """
         if self._loaded and not reload:
             return
-        logging.info("loading the tree...")
+        log.info("loading the tree...")
         for document in self:
             document.load(reload=True)
         # Set meta attributes
         self._loaded = True
 
+    def draw(self, encoding=None):
+        """Get the tree structure as text.
+
+        :param encoding: limit character set to:
+
+            - `'utf-8'` - all characters
+            - `'cp437'` - Code Page 437 characters
+            - (other) - ACSII characters
+
+        """
+        encoding = encoding or getattr(sys.stdout, 'encoding', None)
+        encoding = encoding.lower() if encoding else None
+        return '\n'.join(self._draw_lines(encoding))
+
+    def _draw_line(self):
+        """Get the tree structure in one line."""
+        # Build parent prefix string (`getattr` to enable mock testing)
+        prefix = getattr(self.document, 'prefix', '') or str(self.document)
+        # Build children prefix strings
+        children = ", ".join(c._draw_line() for c in self.children)  # pylint: disable=W0212
+        # Format the tree
+        if children:
+            return "{} <- [ {} ]".format(prefix, children)
+        else:
+            return "{}".format(prefix)
+
+    def _draw_lines(self, encoding):
+        """Generate lines of the tree structure."""
+        # Build parent prefix string (`getattr` to enable mock testing)
+        prefix = getattr(self.document, 'prefix', '') or str(self.document)
+        yield prefix
+        # Build child prefix strings
+        for count, child in enumerate(self.children, start=1):
+            if count == 1:
+                yield self._symbol('end', encoding)
+            else:
+                yield self._symbol('pipe', encoding)
+            if count < len(self.children):
+                base = self._symbol('pipe', encoding)
+                indent = self._symbol('tee', encoding)
+            else:
+                base = self._symbol('space', encoding)
+                indent = self._symbol('bend', encoding)
+            for index, line in enumerate(child._draw_lines(encoding)):  # pylint: disable=W0212
+                if index == 0:
+                    yield indent + line
+                else:
+                    yield base + line
+
+    @staticmethod
+    def _symbol(name, encoding):
+        """Get a drawing symbol based on encoding."""
+        if encoding not in (UTF8, CP437):
+            encoding = ASCII
+        return BOX[name][encoding]
+
+    # decorators are applied to methods in the associated classes
     def delete(self):
         """Delete the tree and its documents and items."""
         for document in self:

@@ -1,23 +1,25 @@
 """Functions to import exiting documents and items."""
 
 import os
-import logging
 import re
 import csv
 
-# TODO: track pylint update to resolve openpyxl false positives
-# pylint: disable=E1101
-import openpyxl  # pylint: disable=F0401
-from openpyxl import load_workbook  # pylint: disable=F0401
+import openpyxl
 
+from doorstop import common
 from doorstop.common import DoorstopError
+from doorstop.core.types import UID
 from doorstop.core.document import Document
 from doorstop.core.item import Item
 from doorstop.core.builder import _get_tree
+from doorstop import settings
+
 
 LIST_SEP_RE = re.compile(r"[\s;,]+")  # regex to split list strings into parts
 
-_DOCUMENTS = []  # cache of unplaced documents
+_documents = []  # cache of unplaced documents
+
+log = common.logger(__name__)
 
 
 def import_file(path, document, ext=None, mapping=None, **kwargs):
@@ -28,12 +30,12 @@ def import_file(path, document, ext=None, mapping=None, **kwargs):
     :param ext: file extension to override input path's extension
     :param mapping: dictionary mapping custom to standard attribute names
 
-    @raise DoorstopError: for unknown file formats
+    :raise DoorstopError: for unknown file formats
 
-    @return: document with imported items
+    :return: document with imported items
 
     """
-    logging.info("importing {} into {}...".format(path, document))
+    log.info("importing {} into {}...".format(path, document))
     ext = ext or os.path.splitext(path)[-1]
     func = check(ext)
     func(path, document, mapping=mapping, **kwargs)
@@ -42,19 +44,19 @@ def import_file(path, document, ext=None, mapping=None, **kwargs):
 def create_document(prefix, path, parent=None, tree=None):
     """Create a Doorstop document from existing document information.
 
-    @param prefix: existing document's prefix (for new items)
-    @param path: new directory path to store this document's items
-    @param parent: parent document's prefix (if one will exist)
-    @param document: explicit tree to add the document
+    :param prefix: existing document's prefix (for new items)
+    :param path: new directory path to store this document's items
+    :param parent: parent document's prefix (if one will exist)
+    :param tree: explicit tree to add the document
 
-    @return: imported Document
+    :return: imported Document
 
     """
     if not tree:
         tree = _get_tree()
 
     # Attempt to create a document with the given parent
-    logging.info("importing document '{}'...".format(prefix))
+    log.info("importing document '{}'...".format(prefix))
     try:
         document = tree.create_document(path, prefix, parent=parent)
     except DoorstopError as exc:
@@ -65,26 +67,25 @@ def create_document(prefix, path, parent=None, tree=None):
         document = Document.new(tree,
                                 path, tree.root, prefix,
                                 parent=parent)
-        logging.warning(exc)
-        _DOCUMENTS.append(document)
+        log.warning(exc)
+        _documents.append(document)
 
     # TODO: attempt to place unplaced documents?
 
-    # Cache and return the document
-    logging.info("imported: {}".format(document))
-    tree._document_cache[document.prefix] = document  # pylint: disable=W0212
+    log.info("imported: {}".format(document))
     return document
 
 
-def add_item(prefix, identifier, attrs=None, document=None):
+def add_item(prefix, uid, attrs=None, document=None, request_next_number=None):
     """Create a Doorstop document from existing document information.
 
-    @param prefix: previously imported document's prefix
-    @param identifier: existing item's unique ID
-    @param attrs: dictionary of Doorstop and custom attributes
-    @param document: explicit document to add the item
+    :param prefix: previously imported document's prefix
+    :param uid: existing item's UID
+    :param attrs: dictionary of Doorstop and custom attributes
+    :param document: explicit document to add the item
+    :param request_next_number: server method to get a document's next number
 
-    @return: imported Item
+    :return: imported Item
 
     """
     if document:
@@ -93,23 +94,43 @@ def add_item(prefix, identifier, attrs=None, document=None):
         assert tree  # tree should be set internally
     else:
         # Get an implicit tree and document
-        tree = _get_tree()
+        tree = _get_tree(request_next_number=request_next_number)
         document = tree.find_document(prefix)
 
-    # Add an item using the specified identifier
-    logging.info("importing item '{}'...".format(identifier))
+    # Add an item using the specified UID
+    log.info("importing item '{}'...".format(uid))
     item = Item.new(tree, document,
-                    document.path, document.root, identifier,
+                    document.path, document.root, uid,
                     auto=False)
     for key, value in (attrs or {}).items():
         item.set(key, value)
     item.save()
 
-    # Cache and return the item
-    logging.info("imported: {}".format(item))
-    document._items.append(item)  # pylint: disable=W0212
-    tree._item_cache[item.id] = item  # pylint: disable=W0212
+    log.info("imported: {}".format(item))
     return item
+
+
+def _file_yml(path, document, **_):
+    """Import items from a YAML export to a document.
+
+    :param path: input file location
+    :param document: document to import items
+
+    """
+    # Parse the file
+    log.info("reading items in {}...".format(path))
+    text = common.read_text(path)
+    # Load the YAML data
+    data = common.load_yaml(text, path)
+    # Add items
+    for uid, attrs in data.items():
+        try:
+            item = document.find_item(uid)
+        except DoorstopError:
+            pass  # no matching item
+        else:
+            item.delete()
+        add_item(document.prefix, uid, attrs=attrs, document=document)
 
 
 def _file_csv(path, document, delimiter=',', mapping=None):
@@ -124,8 +145,8 @@ def _file_csv(path, document, delimiter=',', mapping=None):
     rows = []
 
     # Parse the file
-    logging.info("reading rows in {}...".format(path))
-    with open(path, 'r') as stream:
+    log.info("reading rows in {}...".format(path))
+    with open(path, 'r', encoding='utf-8') as stream:
         reader = csv.reader(stream, delimiter=delimiter)
         for _row in reader:
             row = []
@@ -170,8 +191,8 @@ def _file_xlsx(path, document, mapping=None):
     data = []
 
     # Parse the file
-    logging.debug("reading rows in {}...".format(path))
-    workbook = load_workbook(path)
+    log.debug("reading rows in {}...".format(path))
+    workbook = openpyxl.load_workbook(path)
     worksheet = workbook.active
 
     # Locate the bottom right cell in the workbook that contains cell info
@@ -204,52 +225,64 @@ def _itemize(header, data, document, mapping=None):
     :param mapping: dictionary mapping custom to standard attribute names
 
     """
-    logging.info("converting rows to items...")
-    logging.debug("header: {}".format(header))
+    log.info("converting rows to items...")
+    log.debug("header: {}".format(header))
     for row in data:
-        logging.debug("row: {}".format(row))
+        log.debug("row: {}".format(row))
 
         # Parse item attributes
         attrs = {}
-        identifier = None
+        uid = None
         for index, value in enumerate(row):
-            key = header[index].lower()
 
-            # Map to custom attributes names
+            # Key lookup
+            key = str(header[index]).lower().strip() if header[index] else ''
+            if not key:
+                continue
+
+            # Map key to custom attributes names
             for custom, standard in (mapping or {}).items():
                 if key == custom.lower():
                     msg = "mapped: '{}' => '{}'".format(key, standard)
-                    logging.debug(msg)
+                    log.debug(msg)
                     key = standard
                     break
 
             # Convert values for particular keys
-            if key == 'id':
-                identifier = value
+            if key in ('uid', 'id'):  # 'id' for backwards compatibility
+                uid = value
             elif key == 'links':
                 # split links into a list
                 attrs[key] = _split_list(value)
+            elif key == 'active':
+                # require explicit disabling
+                attrs['active'] = value is not False
             else:
                 attrs[key] = value
 
+        # Get the next UID if the row is a new item
+        if attrs.get('text') and uid in (None, '', settings.PLACEHOLDER):
+            uid = UID(document.prefix, document.sep,
+                      document.next_number, document.digits)
+
         # Convert the row to an item
-        if identifier:
+        if uid and uid != settings.PLACEHOLDER:
 
             # Delete the old item
             try:
-                item = document.find_item(identifier)
+                item = document.find_item(uid)
             except DoorstopError:
-                logging.debug("not yet an item: {}".format(identifier))
+                log.debug("not yet an item: {}".format(uid))
             else:
-                logging.debug("deleting old item: {}".format(identifier))
+                log.debug("deleting old item: {}".format(uid))
                 item.delete()
 
             # Import the item
             try:
-                add_item(document.prefix, identifier,
-                         attrs=attrs, document=document)
+                item = add_item(document.prefix, uid,
+                                attrs=attrs, document=document)
             except DoorstopError as exc:
-                logging.warning(exc)
+                log.warning(exc)
 
 
 def _split_list(value):
@@ -261,7 +294,8 @@ def _split_list(value):
 
 
 # Mapping from file extension to file reader
-FORMAT_FILE = {'.csv': _file_csv,
+FORMAT_FILE = {'.yml': _file_yml,
+               '.csv': _file_csv,
                '.tsv': _file_tsv,
                '.xlsx': _file_xlsx}
 
@@ -269,9 +303,9 @@ FORMAT_FILE = {'.csv': _file_csv,
 def check(ext):
     """Confirm an extension is supported for import.
 
-    @raise DoorstopError: for unknown formats
+    :raise DoorstopError: for unknown formats
 
-    @return: file importer if available
+    :return: file importer if available
 
     """
     exts = ', '.join(ext for ext in FORMAT_FILE)
@@ -282,5 +316,5 @@ def check(ext):
     except KeyError:
         raise exc from None
     else:
-        logging.debug("found file reader for: {}".format(ext))
+        log.debug("found file reader for: {}".format(ext))
         return func

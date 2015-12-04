@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 """Unit tests for the doorstop.core.tree module."""
 
 import unittest
@@ -17,35 +20,39 @@ from doorstop.core.test import FILES, SYS, EMPTY
 from doorstop.core.test import MockDocumentSkip
 
 
-@patch('doorstop.core.document.Document', MockDocumentSkip)  # pylint: disable=R0904
-class TestTreeStrings(unittest.TestCase):  # pylint: disable=R0904
+@patch('doorstop.core.document.Document', MockDocumentSkip)
+class TestTreeStrings(unittest.TestCase):
 
-    """Unit tests for the Tree class using strings."""  # pylint: disable=C0103
+    """Unit tests for the Tree class using strings."""
 
     @classmethod
     def setUpClass(cls):
         a = Tree('a', root='.')
         b1 = Tree('b1', parent=a, root='.')
+        d = Tree('d', parent=b1, root='.')
+        e = Tree('e', parent=d, root='.')
         b2 = Tree('b2', parent=a, root='.')
         c1 = Tree('c1', parent=b2, root='.')
         c2 = Tree('c2', parent=b2, root='.')
         a.children = [b1, b2]
+        b1.children = [d]
+        d.children = [e]
         b2.children = [c1, c2]
         cls.tree = a
 
     def test_repr(self):
         """Verify trees can be represented."""
-        text = "<Tree a <- [ b1, b2 <- [ c1, c2 ] ]>"
+        text = "<Tree a <- [ b1 <- [ d <- [ e ] ], b2 <- [ c1, c2 ] ]>"
         self.assertEqual(text, repr(self.tree))
 
     def test_str(self):
         """Verify trees can be converted to strings."""
-        text = "a <- [ b1, b2 <- [ c1, c2 ] ]"
+        text = "a <- [ b1 <- [ d <- [ e ] ], b2 <- [ c1, c2 ] ]"
         self.assertEqual(text, str(self.tree))
 
     def test_len(self):
         """Verify a tree lengths are correct."""
-        self.assertEqual(5, len(self.tree))
+        self.assertEqual(7, len(self.tree))
 
     def test_getitem(self):
         """Verify item access is not allowed on trees."""
@@ -54,12 +61,72 @@ class TestTreeStrings(unittest.TestCase):  # pylint: disable=R0904
     def test_iter(self):
         """Verify a tree can be iterated over."""
         items = [d for d in self.tree]
-        self.assertListEqual(['a', 'b1', 'b2', 'c1', 'c2'], items)
+        self.assertListEqual(['a', 'b1', 'd', 'e', 'b2', 'c1', 'c2'], items)
 
     def test_contains(self):
         """Verify a tree can be checked for contents."""
         child = self.tree.children[1].children[0]
         self.assertIn(child.document, self.tree)
+
+    def test_draw_utf8(self):
+        """Verify trees structure can be drawn (UTF-8)."""
+        text = ("a" + '\n'
+                "│   " + '\n'
+                "├ ─ b1" + '\n'
+                "│   │   " + '\n'
+                "│   └ ─ d" + '\n'
+                "│       │   " + '\n'
+                "│       └ ─ e" + '\n'
+                "│   " + '\n'
+                "└ ─ b2" + '\n'
+                "    │   " + '\n'
+                "    ├ ─ c1" + '\n'
+                "    │   " + '\n'
+                "    └ ─ c2")
+        logging.debug('expected:\n' + text)
+        text2 = self.tree.draw(encoding='UTF-8')
+        logging.debug('actual:\n' + text2)
+        self.assertEqual(text, text2)
+
+    def test_draw_cp437(self):
+        """Verify trees structure can be drawn (cp437)."""
+        text = ("a" + '\n'
+                "┬   " + '\n'
+                "├── b1" + '\n'
+                "│   ┬   " + '\n'
+                "│   └── d" + '\n'
+                "│       ┬   " + '\n'
+                "│       └── e" + '\n'
+                "│   " + '\n'
+                "└── b2" + '\n'
+                "    ┬   " + '\n'
+                "    ├── c1" + '\n'
+                "    │   " + '\n'
+                "    └── c2")
+        logging.debug('expected:\n' + text)
+        text2 = self.tree.draw(encoding='cp437')
+        logging.debug('actual:\n' + text2)
+        self.assertEqual(text, text2)
+
+    def test_draw_unknown(self):
+        """Verify trees structure can be drawn (unknown)."""
+        text = ("a" + '\n'
+                "|   " + '\n'
+                "+-- b1" + '\n'
+                "|   |   " + '\n'
+                "|   +-- d" + '\n'
+                "|       |   " + '\n'
+                "|       +-- e" + '\n'
+                "|   " + '\n'
+                "+-- b2" + '\n'
+                "    |   " + '\n'
+                "    +-- c1" + '\n'
+                "    |   " + '\n'
+                "    +-- c2")
+        logging.debug('expected:\n' + text)
+        text2 = self.tree.draw(encoding='unknown')
+        logging.debug('actual:\n' + text2)
+        self.assertEqual(text, text2)
 
     @patch('doorstop.settings.REORDER', False)
     def test_from_list(self):
@@ -122,11 +189,11 @@ class TestTreeStrings(unittest.TestCase):  # pylint: disable=R0904
         self.assertRaises(DoorstopError, tree._place, b)  # pylint: disable=W0212
 
 
-@patch('doorstop.core.document.Document', MockDocumentSkip)  # pylint: disable=R0904
-@patch('doorstop.core.tree.Document', MockDocumentSkip)  # pylint: disable=R0904
-class TestTree(unittest.TestCase):  # pylint: disable=R0904
+@patch('doorstop.core.document.Document', MockDocumentSkip)
+@patch('doorstop.core.tree.Document', MockDocumentSkip)
+class TestTree(unittest.TestCase):
 
-    """Unit tests for the Tree class."""  # pylint: disable=C0103
+    """Unit tests for the Tree class."""
 
     def setUp(self):
         document = Document(SYS)
@@ -135,6 +202,7 @@ class TestTree(unittest.TestCase):  # pylint: disable=R0904
         document = Document(FILES)
         self.tree._place(document)  # pylint: disable=W0212
         document.tree = self.tree
+        self.tree._vcs = Mock()  # pylint: disable=W0212
 
     @patch('doorstop.core.vcs.find_root', Mock(return_value=EMPTY))
     def test_palce_empty(self):
@@ -195,6 +263,20 @@ class TestTree(unittest.TestCase):  # pylint: disable=R0904
         """Verify an tree's issues convenience property can be accessed."""
         self.assertEqual(0, len(self.tree.issues))
 
+    def test_get_traceability(self):
+        """Verify traceability rows are correct."""
+        rows = [
+            (self.tree.find_item('SYS001'), self.tree.find_item('REQ001')),
+            (self.tree.find_item('SYS002'), self.tree.find_item('REQ001')),
+            (None, self.tree.find_item('REQ002')),
+            (None, self.tree.find_item('REQ004')),
+        ]
+        # Act
+        rows2 = self.tree.get_traceability()
+        # Assert
+        self.maxDiff = None
+        self.assertListEqual(rows, rows2)
+
     def test_new_document(self):
         """Verify a new document can be created on a tree."""
         self.tree.create_document(EMPTY, '_TEST', parent='REQ')
@@ -206,23 +288,19 @@ class TestTree(unittest.TestCase):  # pylint: disable=R0904
                           temp, '_TEST', parent='UNKNOWN')
         self.assertFalse(os.path.exists(temp))
 
-    @patch('doorstop.core.vcs.git.WorkingCopy.lock')
     @patch('doorstop.core.document.Document.add_item')
-    def test_add_item(self, mock_add_item, mock_lock):
+    def test_add_item(self, mock_add_item):
         """Verify an item can be added to a document."""
         self.tree.add_item('REQ')
-        mock_add_item.assert_called_once_with(level=None, reorder=True)
-        path = os.path.join(FILES, '.doorstop.yml')
-        mock_lock.assert_called_once_with(path)
+        mock_add_item.assert_called_once_with(number=None, level=None,
+                                              reorder=True)
 
-    @patch('doorstop.core.vcs.git.WorkingCopy.lock')
     @patch('doorstop.core.document.Document.add_item')
-    def test_add_item_level(self, mock_add, mock_lock):
+    def test_add_item_level(self, mock_add):
         """Verify an item can be added to a document with a level."""
         self.tree.add_item('REQ', level='1.2.3')
-        mock_add.assert_called_once_with(level='1.2.3', reorder=True)
-        path = os.path.join(FILES, '.doorstop.yml')
-        mock_lock.assert_called_once_with(path)
+        mock_add.assert_called_once_with(number=None, level='1.2.3',
+                                         reorder=True)
 
     def test_add_item_unknown_prefix(self):
         """Verify an exception is raised for an unknown prefix (item)."""
@@ -298,14 +376,12 @@ class TestTree(unittest.TestCase):  # pylint: disable=R0904
         self.assertRaises(DoorstopError,
                           self.tree.unlink_items, 'req3', 'req9999')
 
-    @patch('doorstop.core.vcs.git.WorkingCopy.lock')
     @patch('doorstop.core.editor.launch')
-    def test_edit_item(self, mock_launch, mock_lock):
+    def test_edit_item(self, mock_launch):
         """Verify an item can be edited in a tree."""
         self.tree.edit_item('req2', launch=True)
         path = os.path.join(FILES, 'REQ002.yml')
         mock_launch.assert_called_once_with(path, tool=None)
-        mock_lock.assert_called_once_with(path)
 
     def test_edit_item_unknown_prefix(self):
         """Verify an exception is raised for an unknown prefix (document)."""
@@ -316,7 +392,7 @@ class TestTree(unittest.TestCase):  # pylint: disable=R0904
         self.assertRaises(DoorstopError, self.tree.edit_item, 'req9999')
 
     def test_find_item(self):
-        """Verify an item can be found by exact ID."""
+        """Verify an item can be found by exact UID."""
         # Cache miss
         item = self.tree.find_item('req2-001')
         self.assertIsNot(None, item)
@@ -345,8 +421,3 @@ class TestTree(unittest.TestCase):  # pylint: disable=R0904
         self.assertEqual(0, len(self.tree))
         self.assertEqual(2, mock_delete.call_count)
         self.tree.delete()  # ensure a second delete is ignored
-
-
-class TestModule(unittest.TestCase):  # pylint: disable=R0904
-
-    """Unit tests for the doorstop.core.tree module."""  # pylint: disable=C0103

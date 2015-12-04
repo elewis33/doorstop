@@ -2,24 +2,25 @@ active: true
 derived: false
 level: 4.1
 links:
-- REQ017
+- REQ017: aa9935ea65498cbbb8194f4a84070dea
 normative: true
 ref: ''
+reviewed: 2ebf8d0b43994429742372b50c00e50d
 text: |
   **Exporting a Document**
 
-  Enter VCS working copy:
+  Enter a VCS working copy:
 
-      cd /tmp/doorstop
+      $ cd /tmp/doorstop
 
   Export a document to standard outout:
 
-      doorstop export LLR
+      $ doorstop export LLR
 
   Export all documents to a directory:
 
-      doorstop export all dirpath/to/exports
+      $ doorstop export all dirpath/to/exports
 
   Export documents using specific formats:
 
-      doorstop export REQ path/to/req.xlsx
+      $ doorstop export REQ path/to/req.xlsx

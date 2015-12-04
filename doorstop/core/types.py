@@ -1,17 +1,20 @@
-"""Common classes and functions for the doorstop.core package."""
+"""Common classes and functions for the `doorstop.core` package."""
 
 import os
 import re
 import textwrap
-import logging
+import hashlib
 
 import yaml
 
+from doorstop import common
 from doorstop.common import DoorstopError
 from doorstop import settings
 
+log = common.logger(__name__)
 
-class Prefix(str):  # pylint: disable=R0904
+
+class Prefix(str):
 
     """Unique document prefixes."""
 
@@ -33,6 +36,8 @@ class Prefix(str):  # pylint: disable=R0904
         return super().__hash__()
 
     def __eq__(self, other):
+        if other in settings.RESERVED_WORDS:
+            return False
         if not isinstance(other, Prefix):
             other = Prefix(other)
         return self.lower() == other.lower()
@@ -43,6 +48,11 @@ class Prefix(str):  # pylint: disable=R0904
     def __lt__(self, other):
         return self.lower() < other.lower()
 
+    @property
+    def short(self):
+        """Get a shortened version of the prefix."""
+        return self.lower()
+
     @staticmethod
     def load_prefix(value):
         """Convert a value to a prefix.
@@ -50,55 +60,79 @@ class Prefix(str):  # pylint: disable=R0904
         >>> Prefix.load_prefix("abc 123")
         'abc'
         """
-        return str(value).split(' ')[0]
+        return str(value).split(' ')[0] if value else ''
 
 
-class ID(object):
+class UID(object):
 
-    """Unique item identifier."""
+    """Unique item ID built from document prefix and number."""
 
-    UNKNOWN_MESSAGE = "no{k} item with ID: {i}"  # k='parent'|'child'|'', i=ID
+    UNKNOWN_MESSAGE = "no{k} item with UID: {u}"  # k='parent'|'child', u=UID
 
-    def __new__(cls, *values):
-        if values and isinstance(values[0], ID):
-            return values[0]
+    def __new__(cls, *args, **kwargs):  # pylint: disable=W0613
+        if args and isinstance(args[0], UID):
+            return args[0]
         else:
             return super().__new__(cls)
 
-    def __init__(self, *values):
-        """Initialize an ID using a string or set of parts.
+    def __init__(self, *values, stamp=None):
+        """Initialize an UID using a string, dictionary, or set of parts.
 
         Option 1:
 
-        @param *values: string representation of ID
+        :param *values: UID + optional stamp ("UID:stamp")
+        :param stamp: stamp of :class:`~doorstop.core.item.Item` (if known)
 
         Option 2:
 
-        @param *values: prefix, separator, number, digit count
+        :param *values: {UID: stamp}
+        :param stamp: stamp of :class:`~doorstop.core.item.Item` (if known)
+
+        Option 3:
+
+        :param *values: prefix, separator, number, digit count
+        param stamp: stamp of :class:`~doorstop.core.item.Item` (if known)
 
         """
+        if values and isinstance(values[0], UID):
+            self.stamp = stamp or values[0].stamp
+            return
+        self.stamp = stamp or Stamp()
         # Join values
         if len(values) == 0:
-            self.value = ""
+            self.value = ''
         elif len(values) == 1:
-            self.value = str(values[0])
+            value = values[0]
+            if isinstance(value, str) and ':' in value:
+                # split UID:stamp into a dictionary
+                pair = value.rsplit(':', 1)
+                value = {pair[0]: pair[1]}
+            if isinstance(value, dict):
+                pair = list(value.items())[0]
+                self.value = str(pair[0])
+                self.stamp = self.stamp or Stamp(pair[1])
+            else:
+                self.value = str(value) if values[0] else ''
         elif len(values) == 4:
-            self.value = ID.join_id(*values)
+            self.value = UID.join_uid(*values)
         else:
             raise TypeError("__init__() takes 1 or 4 positional arguments")
         # Split values
         try:
-            parts = ID.split_id(self.value)
+            parts = UID.split_uid(self.value)
             self._prefix = Prefix(parts[0])
             self._number = parts[1]
         except ValueError:
             self._prefix = self._number = None
-            self._exc = DoorstopError("invalid ID: {}".format(self.value))
+            self._exc = DoorstopError("invalid UID: {}".format(self.value))
         else:
             self._exc = None
 
     def __repr__(self):
-        return "ID('{}')".format(self.value)
+        if self.stamp:
+            return "UID('{}', stamp='{}')".format(self.value, self.stamp)
+        else:
+            return "UID('{}')".format(self.value)
 
     def __str__(self):
         return self.value
@@ -109,8 +143,8 @@ class ID(object):
     def __eq__(self, other):
         if not other:
             return False
-        if not isinstance(other, ID):
-            other = ID(other)
+        if not isinstance(other, UID):
+            other = UID(other)
         try:
             return all((self.prefix == other.prefix,
                         self.number == other.number))
@@ -131,60 +165,74 @@ class ID(object):
 
     @property
     def prefix(self):
-        """Get the ID's prefix."""
+        """Get the UID's prefix."""
         self.check()
         return self._prefix
 
     @property
     def number(self):
-        """Get the ID's number."""
+        """Get the UID's number."""
         self.check()
         return self._number
 
+    @property
+    def short(self):
+        """Get a shortened version of the UID."""
+        self.check()
+        return self.prefix.lower() + str(self.number)
+
+    @property
+    def string(self):
+        """Convert the UID and stamp to a single string."""
+        if self.stamp:
+            return "{}:{}".format(self.value, self.stamp)
+        else:
+            return "{}".format(self.value)
+
     def check(self):
-        """Verify an ID is valid."""
+        """Verify an UID is valid."""
         if self._exc:
             raise self._exc
 
     @staticmethod
-    def split_id(text):
-        """Split an item's ID string into a prefix and number.
+    def split_uid(text):
+        """Split an item's UID string into a prefix and number.
 
-        >>> ID.split_id('ABC00123')
+        >>> UID.split_uid('ABC00123')
         ('ABC', 123)
 
-        >>> ID.split_id('ABC.HLR_01-00123')
+        >>> UID.split_uid('ABC.HLR_01-00123')
         ('ABC.HLR_01', 123)
 
-        >>> ID.split_id('REQ2-001')
+        >>> UID.split_uid('REQ2-001')
         ('REQ2', 1)
 
         """
         match = re.match(r"([\w.-]*\D)(\d+)", text)
         if not match:
-            raise ValueError("unable to parse ID: {}".format(text))
+            raise ValueError("unable to parse UID: {}".format(text))
         prefix = match.group(1).rstrip(settings.SEP_CHARS)
         number = int(match.group(2))
         return prefix, number
 
     @staticmethod
-    def join_id(prefix, sep, number, digits):
-        """Join the parts of an item's ID into a string.
+    def join_uid(prefix, sep, number, digits):
+        """Join the parts of an item's UID into a string.
 
-        >>> ID.join_id('ABC', '', 123, 5)
+        >>> UID.join_uid('ABC', '', 123, 5)
         'ABC00123'
 
-        >>> ID.join_id('REQ.H', '-', 42, 4)
+        >>> UID.join_uid('REQ.H', '-', 42, 4)
         'REQ.H-0042'
 
-        >>> ID.join_id('ABC', '-', 123, 0)
+        >>> UID.join_uid('ABC', '-', 123, 0)
         'ABC-123'
 
         """
         return "{}{}{}".format(prefix, sep, str(number).zfill(digits))
 
 
-class Literal(str):  # pylint: disable=R0904
+class _Literal(str):
 
     """Custom type for text which should be dumped in the literal style."""
 
@@ -194,10 +242,10 @@ class Literal(str):  # pylint: disable=R0904
         return dumper.represent_scalar('tag:yaml.org,2002:str', data,
                                        style='|' if data else '')
 
-yaml.add_representer(Literal, Literal.representer)
+yaml.add_representer(_Literal, _Literal.representer)
 
 
-class Text(str):  # pylint: disable=R0904
+class Text(str):
 
     """Markdown text paragraph."""
 
@@ -222,12 +270,14 @@ class Text(str):  # pylint: disable=R0904
         'list:\n\n- a\n- b'
 
         """
-        return Text.join(value)
+        return Text.join(value if value else "")
 
     @staticmethod
     def save_text(text, end='\n'):
         """Break a string at sentences and dump as wrapped literal YAML."""
-        return Literal(Text.wrap(Text.sbd(str(text), end=end)))
+        split = Text.sbd(str(text), end=end)
+        wrapped = Text.wrap(split)
+        return _Literal(wrapped)
 
     # Based on: http://en.wikipedia.org/wiki/Sentence_boundary_disambiguation
     RE_SENTENCE_BOUNDARIES = re.compile(r"""
@@ -250,8 +300,8 @@ class Text(str):  # pylint: disable=R0904
     def sbd(text, end='\n'):
         r"""Replace sentence boundaries with newlines and append a newline.
 
-        @param text: string to line break at sentences
-        @param end: appended to the end of the update text
+        :param text: string to line break at sentences
+        :param end: appended to the end of the update text
 
         >>> Text.sbd("Hello, world!", end='')
         'Hello, world!'
@@ -267,7 +317,7 @@ class Text(str):  # pylint: disable=R0904
             return ''
 
     @staticmethod
-    def wrap(text, width=settings.MAX_LINE_LENTH):
+    def wrap(text, width=settings.MAX_LINE_LENGTH):
         r"""Wrap lines of text to the maximum line length.
 
         >>> Text.wrap("Hello, world!", 9)
@@ -332,11 +382,11 @@ class Level(object):
     identifying "heading" levels when written to file.
     """
 
-    def __init__(self, value, heading=None):
+    def __init__(self, value=None, heading=None):
         """Initialize an item level from a sequence of numbers.
 
-        @param value: sequence of int, float, or period-delimited string
-        @param heading: force a heading value (or inferred from trailing zero)
+        :param value: sequence of int, float, or period-delimited string
+        :param heading: force a heading value (or inferred from trailing zero)
 
         """
         if isinstance(value, Level):
@@ -357,7 +407,7 @@ class Level(object):
     def __repr__(self):
         if self.heading:
             level = '.'.join(str(n) for n in self._parts)
-            return "Level('{}', heading=True)".format(level, self.heading)
+            return "Level('{}', heading=True)".format(level)
         else:
             return "Level('{}')".format(str(self))
 
@@ -471,7 +521,7 @@ class Level(object):
             new = Level(1 if not n else n for n in self._parts)
         if new:
             msg = "minimum level reached, reseting: {} -> {}".format(old, new)
-            logging.warning(msg)
+            log.warning(msg)
             self._parts = list(new.value)
 
     @staticmethod
@@ -494,6 +544,9 @@ class Level(object):
         [1]
 
         """
+        # Correct for default values
+        if not value:
+            value = 1
         # Correct for integers (e.g. 42) and floats (e.g. 4.2) in YAML
         if isinstance(value, (int, float)):
             value = str(value)
@@ -507,7 +560,7 @@ class Level(object):
         # Clean up multiple trailing zeros
         parts = [int(n) for n in nums]
         if parts and parts[-1] == 0:
-            while parts[-1] == 0:
+            while parts and parts[-1] == 0:
                 del parts[-1]
             parts.append(0)
 
@@ -543,6 +596,95 @@ class Level(object):
         return Level(self.value)
 
 
+class Stamp(object):
+
+    """Hashed content for change tracking.
+
+    :param values: one of the following:
+
+        - objects to hash as strings
+        - existing string stamp
+        - `True` - manually-confirmed matching hash, to be replaced later
+        - `False` | `None` | (nothing) - manually-confirmed mismatching hash
+
+    """
+
+    def __init__(self, *values):
+        if not values:
+            self.value = None
+            return
+        if len(values) == 1:
+            value = values[0]
+            if to_bool(value):
+                self.value = True
+                return
+            if not value:
+                self.value = None
+                return
+            if isinstance(value, str):
+                self.value = value
+                return
+        self.value = self.digest(*values)
+
+    def __repr__(self):
+        return "Stamp({})".format(repr(self.value))
+
+    def __str__(self):
+        if isinstance(self.value, str):
+            return self.value
+        else:
+            return ''
+
+    def __bool__(self):
+        return bool(self.value)
+
+    def __eq__(self, other):
+        return self.value == other
+
+    def __ne__(self, other):
+        return not self == other
+
+    @property
+    def yaml(self):
+        """Get the value to be used in YAML dumping."""
+        return self.value
+
+    @staticmethod
+    def digest(*values):
+        """Hash the values for later comparison."""
+        md5 = hashlib.md5()
+        for value in values:
+            md5.update(str(value).encode())
+        return md5.hexdigest()
+
+
+class Reference(object):
+
+    """External reference to a file or lines in a file."""
+
+
+def to_bool(obj):
+    """Convert a boolean-like object.
+
+    >>> to_bool(1)
+    True
+
+    >>> to_bool(0)
+    False
+
+    >>> to_bool(' True ')
+    True
+
+    >>> to_bool('F')
+    False
+
+    """
+    if isinstance(obj, str):
+        return obj.lower().strip() in ('yes', 'true', 'enabled', '1')
+    else:
+        return bool(obj)
+
+
 def is_tree(obj):
     """Determine if the object is a tree-like."""
     return hasattr(obj, 'documents')
@@ -562,13 +704,13 @@ def iter_documents(obj, path, ext):
     """Get an iterator if documents from a tree or document-like object."""
     if is_tree(obj):
         # a tree
-        logging.debug("iterating over tree...")
+        log.debug("iterating over tree...")
         for document in obj.documents:
             path2 = os.path.join(path, document.prefix + ext)
             yield document, path2
     else:
         # assume a document-like object
-        logging.debug("iterating over document-like object...")
+        log.debug("iterating over document-like object...")
         yield obj, path
 
 
@@ -576,13 +718,13 @@ def iter_items(obj):
     """Get an iterator of items from from an item, list, or document."""
     if is_document(obj):
         # a document
-        logging.debug("iterating over document...")
+        log.debug("iterating over document...")
         return (i for i in obj.items if i.active)
     try:
-        # an iterable
-        logging.debug("iterating over document-like object...")
+        # an iterable (of items)
+        log.debug("iterating over document-like object...")
         return iter(obj)
     except TypeError:
-        # an item
-        logging.debug("iterating over an item (in a container)...")
+        # assume an item
+        log.debug("iterating over an item (in a container)...")
         return [obj]
